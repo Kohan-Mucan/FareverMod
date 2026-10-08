@@ -1,60 +1,58 @@
-"""In-app updater, checks GitHub Releases (via the website's /api/release.php
-oracle) and self-replaces the one-file exe.
+"""In-app update notifier: reads this repo's latest GitHub Release and links out.
 
-Flow: the desktop app asks farever-pals.com what the latest release is (the site
-already knows the GitHub repo from its Download config), compares versions, and -
-if newer, downloads the GitHub asset, verifies it, and swaps itself on disk.
+Flow: the desktop app asks GitHub's releases API for the newest release of
+`GITHUB_REPO`, compares the tag against our version, and - if newer - raises a
+sidebar pill. Clicking the pill opens the release page in the browser, where the
+player downloads the new build. No separate release oracle is needed.
 
-Windows wrinkle: a running .exe is locked and can't be overwritten, but it *can*
-be renamed. So we rename the live exe to `*.old`, move the new one into place,
-relaunch, and delete the leftover `*.old` on the next start.
+The check READS the `/releases` list, not `/releases/latest`, so a pre-release
+(a `v0.3.7-beta2` build) still raises the pill: `/latest` skips pre-releases.
 
-Everything here degrades cleanly: a missing network, an old Python (running from
-source rather than a frozen exe), or a checksum mismatch all abort without
-touching the installed app. The pure helpers (version parsing/compare) are
-unit-tested; the file-swap needs a real frozen exe and is exercised manually.
+Notify-only, by design: the app never downloads or replaces its own exe. The
+release payload needs nothing but a version the pill can print and a page to
+open, so a missing hash or size cannot suppress the pill.
+
+Everything here degrades cleanly: a missing network, or a payload that is not a
+version/page, aborts without touching anything. The pure helpers (version
+parsing/compare, URL checks) are unit-tested.
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import shutil
-import subprocess
 import sys
 import urllib.parse
 import urllib.request
-import zipfile
 from dataclasses import dataclass
-from pathlib import Path
 
 from .. import __version__
 
 
 @dataclass(frozen=True)
 class UpdateInfo:
+    # Field ORDER and defaults are load-bearing: every caller builds this by
+    # keyword, and a hand-built one (a test, a future caller) passes only
+    # `version` - so a field added without a default here breaks the
+    # construction rather than the display.
     version: str            # "0.1.2"
-    url: str                # GitHub asset (zip) download URL - see
-                            # `trusted_asset_url`; the download path refuses
-                            # anything whose HOST is not on the trust list    notes: str = ""         # release body (markdown)
-    html_url: str                    # release page (browser fallback)
-    sha256: str                           # release binary hash — required so the
-                                             # installed exe can be trusted; an
-                                             # accepted-host asset is never installed
-                                             # unverified.
-    size: int | None = None             # file size for the download progress bar
+    notes: str = ""         # release body (markdown)
+    html_url: str = ""      # release page the pill opens; left empty when the
+                            # payload named no real page, so `page_url` stays the
+                            # one place that picks a click target
 
 #: Where to send the browser when no release URL is known (dev runs, or a
 #: release payload without html_url).
-DOWNLOAD_PAGE = "https://kohan-mucan.github.io/FareverPal/"
+DOWNLOAD_PAGE = "https://kohan-mucan.github.io/FareverMod/"
 
 
-#: The website's release oracle: GET /api/release.php returns the newest release
-#: the site's Download config points at (the site knows the GitHub repo, so the
-#: app need not). Public and unauthenticated - the one endpoint the updater still
-#: uses now the account feature is gone.
-RELEASE_API = "https://farever-pals.com"
+#: The repo the updater reads releases from. Public, so the releases API needs no
+#: token; a check is one unauthenticated request per launch.
+GITHUB_REPO = "Kohan-Mucan/FareverMod"
+
+#: The releases LIST endpoint (newest first, drafts excluded, pre-releases
+#: INCLUDED). `/releases/latest` would skip a pre-release, so a `-betaN` tag
+#: would never raise the pill. Public and unauthenticated.
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 
 
 #: The startup update-check modes. The DISPLAY TEXT is the stored token, the
@@ -97,10 +95,10 @@ def should_check(value, frozen: bool) -> bool:
     """Whether THIS run polls the release oracle at startup.
 
     `Always` polls even in a source run (how a dev sees the update pill without
-    a build); `Packaged only` polls only where a downloaded release can actually
-    be installed; `Never` is a real opt-out - including in a packaged build,
-    which is the half that had NO switch at all before this became a mode.
-    Junk reads as the default, which is what keeps an unset setting offline.
+    a build); `Packaged only` polls only in a packaged build; `Never` is a real
+    opt-out - including in a packaged build, which is the half that had NO switch
+    at all before this became a mode. Junk reads as the default, which is what
+    keeps an unset setting offline.
     """
     mode = normalize_update_check(value)
     if mode == "Always":
@@ -167,113 +165,70 @@ def http_url(raw) -> str:
     return text
 
 
-#: The hosts an INSTALLABLE asset may come from. A FareverPal release is a
-#: GitHub release download (`github.com/.../releases/download/...`) and GitHub
-#: hands the bytes to a CDN host it owns - so one bare host and one domain
-#: suffix, and nothing else.
-#:
-#: Deliberately NOT `RELEASE_API`'s own host: the asset URL arrives INSIDE the
-#: oracle's response, so trusting the oracle here would let a bad release ROW
-#: serve its own binary, which is the one thing this list exists to stop.
-#:
-#: What this does and does not buy: it stops a payload pointing anywhere else on
-#: the internet (an attacker's own host, a `file:`-adjacent trick, a CDN of their
-#: choosing). It does NOT pin the project - `github.com`, `objects.` and the rest
-#: of the user-content family host EVERY GitHub user's files, so a payload that
-#: can be written can still name someone else's asset. Pinning the repo path
-#: (`/kohan-mucan/FareverPal/`) is the next tightening step, left out here
-#: because the site owns the repo choice and a rename must not brick updates.
-TRUSTED_ASSET_HOSTS = ("github.com",)
-
-#: Subdomains of these count as the same host family. The WHOLE user-content
-#: family, not three named CDN hostnames: GitHub has renamed the release-asset
-#: host before (`objects.` -> `release-assets.`), and a refusal here means no
-#: pill at all, so a rename would quietly stop every install from updating.
-TRUSTED_ASSET_DOMAIN_SUFFIXES = (".githubusercontent.com",)
-
-
-def trusted_asset_url(raw) -> str:
-    """The asset URL we are willing to REPLACE THE RUNNING EXE for, or "".
-
-    `http_url` answers "is this a URL"; this answers "is this OURS". The
-    download path writes what it fetches over the installed exe and relaunches
-    it, so the host is the last thing between a release and a payload that merely
-    arrived in the release JSON - `https://evil.example/x.exe` is a perfectly
-    good URL. A leading `v`-style trick cannot get past this either: the host is
-    read off the parsed URL, lowercased, and matched exactly (or as a real
-    subdomain, so `evil-githubusercontent.com` and `github.com.evil.example` are
-    both out).
-    """
-    text = http_url(raw)
-    if not text:
-        return ""
-    host = (urllib.parse.urlsplit(text).hostname or "").lower().rstrip(".")
-    if host in TRUSTED_ASSET_HOSTS or host.endswith(
-            TRUSTED_ASSET_DOMAIN_SUFFIXES):
-        return text
-    return ""
-
-
 def page_url(html_url) -> str:
-    """Where a click goes when the app cannot install itself (or the payload
-    named no release page): the release page when there is a real one, else the
-    project's download page. Never "" - the button always has somewhere to go.
+    """Where a click goes: the release page when the payload names a real one,
+    else the project's download page. Never "" - the button always has somewhere
+    to go.
     """
     return http_url(html_url) or DOWNLOAD_PAGE
 
 
-# --- frozen-exe helpers ----------------------------------------------------
+# --- frozen-exe helper -----------------------------------------------------
 def is_frozen() -> bool:
     """True when running as the packaged one-file exe (PyInstaller)."""
     return bool(getattr(sys, "frozen", False))
 
 
-def exe_path() -> Path:
-    """The on-disk exe (for a one-file build this is the real launcher, not the
-    _MEIPASS temp dir)."""
-    return Path(sys.executable)
-
-
-def _old_path(cur: Path) -> Path:
-    return cur.with_name(cur.name + ".old")
-
-
-def cleanup_old() -> None:
-    """Delete the `*.old` left by a previous self-update. Best-effort; called on
-    startup once the new exe is the running one (so the old file is unlocked)."""
-    if not is_frozen():
-        return
-    old = _old_path(exe_path())
-    try:
-        if old.exists():
-            old.unlink()
-    except OSError:
-        pass            # still locked / in use - next launch will get it
-
-
 # --- check -----------------------------------------------------------------
-def fetch_latest_release(base_url: str = RELEASE_API) -> dict:
-    """GET the release oracle and return its JSON dict.
+def fetch_latest_release(url: str = RELEASES_API) -> dict:
+    """GET `GITHUB_REPO`'s releases (newest first) and map the newest into the
+    shape `check` reads ({ok, version, notes, html_url}).
+
+    The LIST endpoint, not `/releases/latest`, on purpose: `/latest` skips
+    pre-releases, so a `v0.3.7-beta2` build would never raise the pill. The list
+    includes them (drafts are still excluded, and GitHub sorts newest first).
 
     Blocking (stdlib urllib), so callers run it off the Qt thread. Never raises:
     no network, a non-JSON body or an HTTP error all come back as
-    ``{"ok": False, "error": ...}`` - the shape `check` already handles.
+    ``{"ok": False, "error": ...}`` - the shape `check` already handles. The
+    release JSON is MAPPED here, not validated: `check` stays the gate on the
+    version and page, so a malformed field is refused there exactly as it would
+    be for any other source. Assets are not inspected: the notifier links to the
+    release page, it does not download.
     """
-    url = base_url.rstrip("/") + "/api/release.php"
     req = urllib.request.Request(url, headers={
-        "Accept": "application/json", "User-Agent": "FareverPal-Companion"})
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "FareverMod-Companion"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
+            rels = json.loads(resp.read().decode("utf-8") or "[]")
     except Exception:
         return {"ok": False, "error": "network"}
+    if not isinstance(rels, list):
+        return {"ok": False, "error": "payload"}
+    rel = next((r for r in rels
+                if isinstance(r, dict) and r.get("tag_name")
+                and not r.get("draft")), None)
+    if rel is None:
+        return {"ok": False, "error": "payload"}
+    return {
+        "ok": True,
+        "version": rel.get("tag_name"),
+        "notes": rel.get("body") or "",
+        "html_url": rel.get("html_url"),
+    }
 
 
 def check(api=None) -> UpdateInfo | None:
-    """Ask the release oracle for the latest version; return UpdateInfo if it's
-    newer than us, else None. `api` is any object with a `latest_release()`
-    returning the release dict; omit it to ask the real oracle
+    """Ask the release source for the latest version; return UpdateInfo when it
+    is NEWER and its version is displayable, else None. `api` is any object with
+    a `latest_release()` returning the release dict; omit it to ask GitHub
     (`fetch_latest_release`). Never raises.
+
+    The app only NOTIFIES and links out, so a payload needs nothing but a version
+    the pill can print and a page to open. What is dropped at the wire is
+    anything PRINTED or OPENED verbatim - `clean_version` refuses a version the UI
+    cannot show and `http_url` refuses a `javascript:`/`file:` page.
     """
     try:
         res = api.latest_release() if api is not None else fetch_latest_release()
@@ -281,146 +236,16 @@ def check(api=None) -> UpdateInfo | None:
         return None
     if not isinstance(res, dict) or not res.get("ok"):
         return None
-    # Every field below is UNTRUSTED input: `version` is printed verbatim on the
-    # sidebar pill and `url` is fetched, so a payload that is not a version or a
-    # URL is refused here rather than rendered. (`parse_version` drops
-    # non-digits by design, so "latest" and "9.9.9; DROP TABLE" both used to
-    # compare as newer and reach the pill.)
+    # `parse_version` drops non-digits by design, so "latest" and
+    # "9.9.9; DROP TABLE" both used to compare as newer and reach the pill;
+    # `clean_version` is what keeps a non-version off the sidebar.
     ver = clean_version(res.get("version"))
-    # NOT `http_url`: a fetchable URL from a host we do not publish on is not an
-    # update, it is a download we would refuse a moment later - so it reports
-    # "nothing newer" here, and the pill never advertises an install that would
-    # be turned down (see `trusted_asset_url`).
-    url = trusted_asset_url(res.get("url"))
-    if not ver or not url or not is_newer(ver):
+    if not ver or not is_newer(ver):
         return None
-    sha256 = res.get("sha256")
-    if not isinstance(sha256, str) or not sha256.strip():
-        return None
-    size = res.get("size")
     return UpdateInfo(
         version=ver,
-        url=url,
         notes=str(res.get("notes") or ""),
-        sha256=sha256.strip(),
-        size=(int(size) if isinstance(size, int) else None),
         # Left EMPTY when the payload named no real page, so `page_url` stays
         # the one place that decides where a click goes.
         html_url=http_url(res.get("html_url")),
     )
-
-
-# --- download + stage ------------------------------------------------------
-def download_and_stage(info: UpdateInfo, progress=None) -> Path:
-    """Download the release asset, verify it, and produce the staged exe next to
-    the running one as `<name>.new`; return that path. Raises on any failure
-    (caller keeps the current install untouched).
-
-    Handles both kinds of asset we publish: a **bare .exe** (the current
-    convention) and a **.zip** containing the exe, detected by content, not by
-    URL, so naming never matters. Streams to a temp file rather than buffering
-    the whole ~300 MB payload in RAM. `progress(done, total)` is called during
-    download (total may be 0 if unknown)."""
-    if not is_frozen():
-        raise RuntimeError("self-update only works from the packaged exe")
-    # The gate is repeated HERE, not trusted from `check`: this is the function
-    # that downloads a binary and stages it over the installed exe, so whatever
-    # built this `UpdateInfo` (a future caller, a hand-rolled one, a payload that
-    # got past an older build) it still cannot make us fetch from an arbitrary
-    # host. Raised before the temp file is opened, so a refusal leaves the
-    # install and the disk untouched.
-    if not trusted_asset_url(info.url):
-        host = (urllib.parse.urlsplit(str(info.url or "")).hostname
-                or "(no url)")
-        raise RuntimeError(
-            f"release asset is not on a trusted host ({host}) - refusing to "
-            f"download it")
-
-    cur = exe_path()
-    tmp = cur.with_name(cur.name + ".download")
-    new = cur.with_name(cur.name + ".new")
-    req = urllib.request.Request(info.url, headers={"User-Agent": "FareverPal-Companion"})
-    h = hashlib.sha256()
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as out:
-            total = info.size or int(resp.headers.get("Content-Length") or 0)
-            done = 0
-            while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                h.update(chunk)
-                done += len(chunk)
-                if progress is not None:
-                    progress(done, total)
-        if tmp.stat().st_size == 0:
-            raise RuntimeError("downloaded an empty file")
-        if h.hexdigest().lower() != info.sha256.lower():
-            raise RuntimeError("checksum mismatch — refusing to install")
-        if info.size and tmp.stat().st_size != info.size:
-            raise RuntimeError("size mismatch — refusing to install")
-        _stage_payload(tmp, cur.name, new)
-        return new
-    finally:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
-
-
-def _stage_payload(downloaded: Path, exe_name: str, dest: Path) -> None:
-    """Turn the downloaded asset into the staged exe at `dest`, handling either a
-    bare PE executable or a zip that contains it (sniffed by magic bytes)."""
-    with open(downloaded, "rb") as f:
-        magic = f.read(4)
-    if dest.exists():
-        dest.unlink()
-    if magic.startswith(b"PK\x03\x04"):            # zip archive
-        with zipfile.ZipFile(downloaded) as zf:
-            member = _pick_exe(zf.namelist(), exe_name)
-            with zf.open(member) as src, open(dest, "wb") as out:
-                shutil.copyfileobj(src, out, 256 * 1024)
-    elif magic.startswith(b"MZ"):                  # bare Windows executable
-        os.replace(downloaded, dest)               # move (no 300 MB copy)
-    else:
-        raise RuntimeError("downloaded asset is neither an .exe nor a .zip")
-
-
-def _pick_exe(members: list[str], exe_name: str) -> str:
-    """Choose the exe member of a release zip: exact name first, else any .exe."""
-    target = next((m for m in members if m.rsplit("/", 1)[-1].lower() == exe_name.lower()), None)
-    if target is None:
-        target = next((m for m in members if m.lower().endswith(".exe")), None)
-    if target is None:
-        raise RuntimeError("no .exe inside the release archive")
-    return target
-
-
-# --- apply (swap + relaunch) ----------------------------------------------
-def apply_and_relaunch(new: Path) -> None:
-    """Atomically move the staged exe over the running one and relaunch. The
-    caller must quit the app immediately after this returns so the old process
-    exits. Rolls back if the swap fails partway."""
-    if not is_frozen():
-        raise RuntimeError("self-update only works from the packaged exe")
-    cur = exe_path()
-    old = _old_path(cur)
-    # Clear any stale .old so the rename below can't collide.
-    try:
-        if old.exists():
-            old.unlink()
-    except OSError:
-        pass
-    # Rename the live exe out of the way (allowed for a running image), then move
-    # the new one into its place. If the second step fails, put the original back.
-    os.replace(cur, old)
-    try:
-        os.replace(new, cur)
-    except OSError:
-        os.replace(old, cur)        # roll back - install stays on the old version
-        raise
-
-    flags = 0x00000008 | 0x00000200    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([str(cur)], cwd=str(cur.parent), close_fds=True, creationflags=flags)

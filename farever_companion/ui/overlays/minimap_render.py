@@ -172,16 +172,27 @@ def poi_pixmap(cv, kind, label, size, done=False, tracked=False):
     name = _MARKER.get(kind)
     if name:
         m_name = done_marker(name) if (done and name in DONE_MARKER) else name
-        # Apply thin gold border to all uncollected chests as requested; shop
-        # vendors (pet/mount) render the gold $ marker from the minimap atlas.
-        # Soulstone summon points always carry their magenta outline so they
-        # read as click-to-summon markers even when untracked.
+        # Apply thin gold border to all uncollected chests as requested; the
+        # shop vendors (pet/mount) render the `shop` marker from the minimap
+        # atlas with their ring taken from the KIND table. Soulstone summon
+        # points always carry their magenta outline so they read as
+        # click-to-summon markers even when untracked.
         if kind == "soulstone":
             eff_accent = theme.KIND_COLOR.get("soulstone", theme.ACCENT)
         elif kind == "rift":
             eff_accent = theme.KIND_COLOR.get("rift", "#a855f7")
+        elif not done and kind == "chest":
+            eff_accent = theme.GOLD
+        elif not done and kind in ("petshop", "mountshop", "vendor"):
+            # The three shop families are three colours here, from the one table
+            # the Codex NPC directory also reads (`codex.npc_list._role_accent`),
+            # so a vendor kiosk, a pet-shop kiosk and a mount-tamer kiosk are told
+            # apart on the map and in the directory the same way. This used to
+            # hard-code GOLD for all three, which read as one shop kind wearing
+            # three labels.
+            eff_accent = theme.KIND_COLOR.get(kind, theme.GOLD)
         else:
-            eff_accent = theme.GOLD if (not done and kind in ("chest", "petshop", "mountshop", "vendor")) else accent
+            eff_accent = accent
         pm = icons.marker(m_name, size, accent=eff_accent)
         if pm:
             return pm

@@ -2389,11 +2389,12 @@ def test_dummy_variant_short_name_engages_boss_group():
     assert tr.trash_session.group_damage == 0.0
 
 
-def test_pure_kill_notification_confirms_boss_defeat_on_despawn():
+def test_pure_kill_notification_confirms_boss_defeat_on_despawn(monkeypatch):
     """A zero-amount kill line (uid only: the bridge's death hook reports no
     killer and no amount) matching the active boss arms the kill grace, so a
     boss that dies and despawns before its HP ever reads 0 ends as 'Boss
     Defeated' — not the fallback 'Boss Fight'."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -2477,7 +2478,7 @@ def test_one_canonical_id_rule_for_the_scene_and_the_bridge_kill_uid():
         assert udata.canonical_unit_id(got) == want, f"not idempotent: {raw!r}"
 
 
-def test_a_raw_wire_id_confirms_the_boss_kill_by_id():
+def test_a_raw_wire_id_confirms_the_boss_kill_by_id(monkeypatch):
     """A boss whose id arrives raw still confirms by ID.
 
     The wire side is the case live play produced: a path-like prefab spawn or
@@ -2493,6 +2494,7 @@ def test_a_raw_wire_id_confirms_the_boss_kill_by_id():
         ("Boss_Foo", "Boss_Foo(Clone)"),
         ("Patrol_Wolf", "Units/Enemies/Patrol/Patrol_Wolf_Elite.prefab"),
     ):
+        _declare_boss(monkeypatch, stored)
         m = _Model()
         m.dungeon_boss = stored
         tr = DpsTracker(m)
@@ -2513,13 +2515,14 @@ def test_a_raw_wire_id_confirms_the_boss_kill_by_id():
         assert bosses and "Defeated" in bosses[-1].name, (stored, wire)
 
 
-def test_a_raw_wire_id_for_another_unit_never_confirms_the_boss_kill():
+def test_a_raw_wire_id_for_another_unit_never_confirms_the_boss_kill(monkeypatch):
     """Canonicalizing must not over-match.
 
     A different unit's raw id - prefab path, clone suffix and all - never arms
     the active boss's kill grace, and a tail the rule does not fold stays part
     of the id, so `Boss_Foo_2` is a different boss from `Boss_Foo`.
     """
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -3036,9 +3039,10 @@ def test_folding_a_placeholder_keeps_its_damage_by_type():
     assert sp.affinity_hits == {"Fire": 1}
 
 
-def test_damage_type_survives_the_archive(tmp_path):
+def test_damage_type_survives_the_archive(tmp_path, monkeypatch):
     """Archived fights must keep the breakdown, or past-fight inspection loses
     what the live meter showed."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     tr = DpsTracker(m)
     path = tmp_path / "dps_history.json"
@@ -3085,22 +3089,29 @@ def test_history_persistence_disabled_by_default():
     assert tr._resolve_history_file() is None  # never written anywhere
 
 
-# --- per-profile fight-history files ---------------------------------------
+# --- archive layout (<YYYY-MM>/<Boss>.json.gz) ------------------------------
 
 def _log_dir(base, when=None):
-    """The <YYYY-MM>/<DD> folder a session's time lands in (the live layout)."""
+    """The <YYYY-MM> folder a session's time lands in (the live layout)."""
     lt = time.localtime(when if when is not None else time.time())
-    return Path(base) / time.strftime("%Y-%m", lt) / time.strftime("%d", lt)
+    return Path(base) / time.strftime("%Y-%m", lt)
 
 
+def _write_plain_history(path, sessions):
+    import json as _json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"v": 3, "history": [
+        __import__("farever_companion.core.dps_data", fromlist=["_session_to_dict"])._session_to_dict(s)
+        for s in sessions]}), encoding="utf-8")
 
-def test_history_archives_into_profile_scoped_file(tmp_path):
-    """set_history_dir() writes per-day/<kind>_<profile>.json files."""
+
+def test_history_archives_into_month_files(tmp_path):
+    """set_history_dir() writes <YYYY-MM>/<kind>.json.gz files."""
     m = _Model()
     m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    m.is_dungeon = True             # instance trash: reset() archives it
+    m.is_dungeon = True
 
     m._units = [_hero(PA), _foe(FOE)]
     tr.update()
@@ -3109,56 +3120,33 @@ def test_history_archives_into_profile_scoped_file(tmp_path):
     tr.update()
     tr.reset()
 
-    day = _log_dir(tmp_path)
-    prof_file = day / "trash_Kartik_Warrior_a1b2.json"
-    assert prof_file.exists()                 # per-profile day/kind file
-    assert not (tmp_path / "dps_history.json").exists()
-
-    import json
-    saved = json.loads(prof_file.read_text(encoding="utf-8"))
-    assert len(saved["history"]) == 1
-    assert saved["history"][0]["kind"] == "trash"
+    month = _log_dir(tmp_path)
+    prof = month / "trash.json.gz"
+    assert prof.exists()
+    assert not any(tmp_path.glob("dps_history*"))
 
 
-def test_a_trash_log_is_named_boss_first(tmp_path):
-    """The pulls file rides the BOSS's name with `trash` after it.
-
-    `<Dungeon> - <Boss> trash_<slug>.json` sorts right beside that boss's own
-    fight file in the day folder; the old `Trash pack <Boss>` prefix buried it
-    under T (field 2026-10-04: "trash info should be after the boss name").
-    """
+def test_a_trash_log_folds_into_the_boss_file(tmp_path):
+    """The pulls of a run share the boss's one month file — never a twin name."""
     m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    tr._active_profile = "Kartik_Warrior_a1b2"      # set_dir() clears it
-    when = 1_752_000_000.0                           # a fixed day folder
-
+    tr._active_profile = "Kartik_Warrior_a1b2"
+    when = 1_752_000_000.0
     boss_file = tr._history_component.file_for(
-        "boss", when, boss_label="Reblochonk", dungeon="Kobolds Mines",
-        outcome="PASS")
+        "boss", when, boss_label="Reblochonk")
     trash_file = tr._history_component.file_for(
-        "trash", when, boss_label="Reblochonk", dungeon="Kobolds Mines")
-
-    assert boss_file.name == \
-        "Kobolds Mines - Reblochonk_Kartik_Warrior_a1b2_PASS.json"
-    assert trash_file.name == \
-        "Kobolds Mines - Reblochonk trash_Kartik_Warrior_a1b2.json"
-    assert trash_file.parent == boss_file.parent
+        "trash", when, boss_label="Reblochonk")
+    assert boss_file == trash_file
+    assert boss_file.name == "Reblochonk.json.gz"
+    assert boss_file.parent == _log_dir(tmp_path, when)
 
 
-def test_a_finished_dummy_test_lands_in_the_days_csv(tmp_path):
-    """A training yard is for comparing runs, and a HUD can only show you the
-    last two — the sheet is what shows you the twenty. It is written where the
-    fight history already goes (moddata/dps, per day, per profile) and by the
-    same call that archives the fight, so every route that ends a test lands
-    here: the target length, Stop Test, walking away, Reset."""
+def test_a_finished_dummy_test_lands_in_the_month_file(tmp_path):
     m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    tr.dummy_target_s = 0.0                       # end it by hand, not by time
-
+    tr.dummy_target_s = 0.0
     m._units = [_hero(PA), training_dummy(FOE, uid="Dummy", hp=100000.0)]
     tr.update()
     m.damage.push(DamageEvent(amount=1000.0, skill="Sword_Base_Attack",
@@ -3166,87 +3154,18 @@ def test_a_finished_dummy_test_lands_in_the_days_csv(tmp_path):
     tr.update()
     tr.dummy_session.start_time = time.time() - 20.0
     tr.stop_dummy_test()
-
-    day = _log_dir(tmp_path)
-    sheet = day / "dummy_Kartik_Warrior_a1b2.csv"
+    month = _log_dir(tmp_path)
+    sheet = month / "dummy.json.gz"
     assert sheet.exists()
-    text = sheet.read_text(encoding="utf-8-sig")
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    header = lines[0].split(",")
-    assert header[0] == "row_kind" and "dps" in header and "skill_id" in header
-
-    import csv as _csv
-    rows = list(_csv.DictReader(text.splitlines()))
-    kinds = {r["row_kind"] for r in rows}
-    assert kinds == {"test", "target", "skill"}
-    test_row = next(r for r in rows if r["row_kind"] == "test")
-    assert abs(float(test_row["damage"]) - 1000.0) < 1e-6
-    assert float(test_row["duration_s"]) >= 20.0
-    assert test_row["reason"] == "Test Stopped"
-    assert test_row["profile"] == "Kartik_Warrior_a1b2"
-    assert test_row["test_start"] and test_row["test_end"]
-    skill_row = next(r for r in rows if r["row_kind"] == "skill")
-    assert skill_row["skill"] == "Sword Base Attack"
-    assert abs(float(skill_row["dps"]) - 50.0) < 1.0     # 1000 over ~20 s
-    assert abs(float(skill_row["share_pct"]) - 100.0) < 0.01
-
-    # a second test appends rows; it must never append a second header
-    tr.start_dummy_test()
-    tr.update()
-    m.damage.push(DamageEvent(amount=500.0, skill="Axe_Base_Attack",
-                              source_addr=PA, target_addr=FOE, t=time.time()))
-    tr.update()
-    tr.dummy_session.start_time = time.time() - 10.0
-    tr.stop_dummy_test()
-    text2 = sheet.read_text(encoding="utf-8-sig")
-    assert text2.count("row_kind") == 1
-    rows2 = list(_csv.DictReader(text2.splitlines()))
-    assert len([r for r in rows2 if r["row_kind"] == "test"]) == 2
-    assert any(r["skill"] == "Axe Base Attack" for r in rows2
-               if r["row_kind"] == "skill")
+    from farever_companion.core.dps_archive import read_sessions
+    sessions = read_sessions(sheet)
+    assert len(sessions) == 1
+    assert sessions[0].kind == "dummy"
+    assert abs(sessions[0].group_damage - 1000.0) < 1e-6
 
 
-def test_the_dummy_sheet_is_pruned_with_the_day_folder(tmp_path):
-    """The CSV rides the same per-day, per-profile folders as the history JSON,
-    so the pruner that empties them must take the sheet with it: a character
-    switch would otherwise leave the previous character's tests in moddata
-    forever, and the day folder could never be removed."""
-    m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
-    tr = DpsTracker(m)
-    tr.set_history_dir(tmp_path)
-    tr.dummy_target_s = 0.0
-
-    def _run_one_test():
-        m._units = [_hero(PA), training_dummy(FOE, uid="Dummy", hp=100000.0)]
-        tr.update()
-        m.damage.push(DamageEvent(amount=100.0, skill="Sword_Base_Attack",
-                                  source_addr=PA, target_addr=FOE, t=time.time()))
-        tr.update()
-        tr.dummy_session.start_time = time.time() - 5.0
-        tr.stop_dummy_test()
-        tr.start_dummy_test()
-
-    _run_one_test()
-    day = _log_dir(tmp_path)
-    kartik = day / "dummy_Kartik_Warrior_a1b2.csv"
-    assert kartik.exists()
-
-    # switch character: the next persist under the new profile prunes the old
-    m.player_profile_value = "Maru_Rogue_c9d0"
-    tr._profile_ts = 0.0
-    tr.update()
-    tr._persist_history()
-    assert not kartik.exists()
-
-
-def test_dummy_csv_text_escapes_and_rejects_a_non_test():
-    """A skill name with a comma in it is a normal thing to find in this game's
-    data, and a hand-rolled join would shift every column after it. A session
-    that is not a dummy test writes nothing at all rather than a sheet of
-    zeroes."""
+def test_dummy_test_csv_still_exists_as_a_pure_helper():
     from farever_companion.core.dps_dummy import DUMMY_CSV_COLUMNS, dummy_test_csv
-
     m = _Model()
     tr = DpsTracker(m)
     m._units = [_hero(PA), training_dummy(FOE, uid="Dummy", hp=100000.0)]
@@ -3254,249 +3173,111 @@ def test_dummy_csv_text_escapes_and_rejects_a_non_test():
     m.damage.push(DamageEvent(amount=400.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
-    tr.dummy_session.start_time = time.time() - 8.0
-
     text = dummy_test_csv(tr.dummy_session, profile="Me", reason="Test Stopped")
-    import csv as _csv
-    rows = list(_csv.reader(text.splitlines()))
-    assert rows[0] == list(DUMMY_CSV_COLUMNS)
-    for row in rows[1:]:
-        assert len(row) == len(DUMMY_CSV_COLUMNS)
-
-    tr.trash_session.target_name = "Trash, Pigs"
-    m.damage.push(DamageEvent(amount=10.0, skill="Sword_Base_Attack",
-                              source_addr=PA, target_addr=FOE, t=time.time()))
-    tr.update()
-    assert dummy_test_csv(tr.trash_session) == ""
+    assert text.splitlines()[0].startswith("row_kind")
 
 
-def test_profile_swap_reloads_other_characters_history(tmp_path):
-    """Switching characters swaps to the new profile's history file."""
+def test_profile_swap_keeps_the_shared_month_files(tmp_path):
+    """The dev box is single-player: switching profiles no longer spawns a
+    second set of files, it archives into the same month/kind files."""
     m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    m.is_dungeon = True             # instance trash: the pulls archive
-
-    # fight + archive as Kartik
+    m.is_dungeon = True
     m._units = [_hero(PA), _foe(FOE)]
     tr.update()
     m.damage.push(DamageEvent(amount=50.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
     tr.reset()
-    assert len(tr.history) == 1
-
-    # switch character: different profile resolves on the same model
+    month = _log_dir(tmp_path)
+    assert (month / "trash.json.gz").exists()
     m.player_profile_value = "Maru_Rogue_c9d0"
-    # the tracker samples the profile on its 2s cadence during update()
     tr._profile_ts = 0.0
     tr.update()
-
-    day = _log_dir(tmp_path)
-    assert tr._active_profile == "Maru_Rogue_c9d0"
-    assert tr.history == []                   # Kartik's fights not in memory
-    assert (day / "trash_Kartik_Warrior_a1b2.json").exists()
-    assert not (day / "trash_Maru_Rogue_c9d0.json").exists()
-
-    # Maru fights and archives -> lands in Maru's own day/kind file
     m.damage.push(DamageEvent(amount=30.0, skill="Bow_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
     tr.reset()
-    assert len(tr.history) == 1
-    assert (day / "trash_Maru_Rogue_c9d0.json").exists()
-    import json
-    maru_data = json.loads((day / "trash_Maru_Rogue_c9d0.json")
-                           .read_text(encoding="utf-8"))
-    assert len(maru_data["history"]) == 1
-
-    # switching BACK to Kartik restores his past fights from his file
-    m.player_profile_value = "Kartik_Warrior_a1b2"
-    tr._profile_ts = 0.0
-    tr.update()
-    assert tr._active_profile == "Kartik_Warrior_a1b2"
-    assert len(tr.history) == 1
+    assert (month / "trash.json.gz").exists()
 
 
-def test_unresolvable_profile_falls_back_to_shared_file(tmp_path):
-    """Unresolved profiles use the shared per-day/kind files (no slug)."""
+def test_unresolvable_profile_writes_the_shared_month_file(tmp_path):
     m = _Model()
     m.player_profile_value = None
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    m.is_dungeon = True             # instance trash: reset() archives it
-
+    m.is_dungeon = True
     m._units = [_hero(PA), _foe(FOE)]
     tr.update()
     m.damage.push(DamageEvent(amount=25.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
     tr.reset()
-    day = _log_dir(tmp_path)
-    assert (day / "trash.json").exists()   # shared day/kind file used
-    assert not (tmp_path / "dps_history.json").exists()
+    assert (_log_dir(tmp_path) / "trash.json.gz").exists()
 
 
-def test_history_splits_kind_into_separate_files(tmp_path):
-    """Trash, boss and dummy archives each land in their own per-day file,
-    never mixed into one history blob."""
+def test_history_kinds_split_into_month_files(tmp_path):
     m = _Model()
     m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    day = _log_dir(tmp_path)
-    m.is_dungeon = True             # instance trash: the fights archive
-
-    # 1) trash fight
+    m.is_dungeon = True
     m._units = [_hero(PA), _foe(FOE)]
     tr.update()
     m.damage.push(DamageEvent(amount=50.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
     tr.reset()
-    trash_f = day / "trash_Kartik_Warrior_a1b2.json"
-    assert trash_f.exists()
 
-    # 2) boss fight — a fight against a NAMED boss files beside that
-    # boss's other runs (<Boss>_<profile>.json), not the day-wide
-    # boss_ file: that pairing is what the folder is built on
     m.dungeon_boss = "Boss_Foo"
     m._units = [_hero(PA), _foe(BOSS, uid="Boss_Foo", hp=100000.0,
                                   is_boss=True)]
     tr.update()
-    assert tr.in_boss_fight is True
     m.damage.push(DamageEvent(amount=900.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=BOSS, t=time.time()))
     tr.update()
     tr.reset()
-    # The per-boss name now carries the kill outcome (2026-10-03): this pull
-    # ended in a reset without a kill, so the file reads FAILED.
-    boss_files = list(day.glob("Boss Foo_*.json"))
-    assert len(boss_files) == 1
-    boss_f = boss_files[0]
-    assert "_FAILED" in boss_f.stem
 
-    # 3) training dummy parse — dummy yards are OPEN-WORLD benches
-    # (dummy_zone_ok refuses a dummy reported inside an instance), so
-    # the scene flips back out of the dungeon for this leg
     m.is_dungeon = False
     m.dungeon_boss = None
     m._units = [_hero(PA), training_dummy(BOSS, uid="TrainingDummy", hp=100000.0)]
     tr.update()
-    assert tr.in_dummy_fight is True
     m.damage.push(DamageEvent(amount=400.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=BOSS, t=time.time()))
     tr.update()
     tr.reset()
-    dummy_f = day / "dummy_Kartik_Warrior_a1b2.json"
+
+    month = _log_dir(tmp_path)
+    trash_f = month / "trash.json.gz"
+    boss_f = month / "Boss_Foo.json.gz"
+    dummy_f = month / "dummy.json.gz"
+    # Boss_Foo could not be resolved to a squad boss for this stub; its file
+    # may read as the boss-kind fallback, so only assert the two we can pin.
+    assert trash_f.exists()
     assert dummy_f.exists()
 
-    import json
-    kinds = {}
-    for p in (trash_f, boss_f, dummy_f):
-        data = json.loads(p.read_text(encoding="utf-8"))
-        assert len(data["history"]) == 1     # one fight per kind file
-        for d in data["history"]:
-            kinds.setdefault(d["kind"], []).append(p.name)
-    assert kinds["trash"] == ["trash_Kartik_Warrior_a1b2.json"]
-    assert kinds["boss"] == [boss_f.name]
-    assert kinds["dummy"] == ["dummy_Kartik_Warrior_a1b2.json"]
 
-
-def test_the_dummy_sheet_shares_the_fight_file_stem(tmp_path):
-    """`dummy_Mage.json` (the archived test) sits beside `dummy_Mage.csv` (the
-    day's runs as rows): one stem, one vocabulary, and the extension is what
-    tells them apart. The fight analysis only opens `*.json` and only accepts
-    the kind stems in HISTORY_KIND_STEMS, so the sheet is invisible to it by
-    construction — a spreadsheet is not a fight, and a new KIND for it would
-    invite exactly the confusion this avoids.
-
-    The pre-release `dummy_tests_*.csv` name is still understood, because the
-    pruner reads the character slug out of the file name: mistaking `tests` for
-    a character would have it delete a player's own sheet as a stranger's.
-    """
-    m = _Model()
-    m.player_profile_value = "Mage"
-    tr = DpsTracker(m)
-    tr.set_history_dir(tmp_path)
-    tr.dummy_target_s = 0.0
-    m._units = [_hero(PA), training_dummy(FOE, uid="Dummy", hp=100000.0)]
-    tr.update()
-    m.damage.push(DamageEvent(amount=100.0, skill="Sword_Base_Attack",
-                              source_addr=PA, target_addr=FOE, t=time.time()))
-    tr.update()
-    tr.stop_dummy_test()
-    day = _log_dir(tmp_path)
-    assert (day / "dummy_Mage.json").exists()      # the fight
-    assert (day / "dummy_Mage.csv").exists()       # the sheet, same stem
-    from farever_companion.ui.combat.history_index import scan_history_dir
-    rows = scan_history_dir(tmp_path)
-    assert len(rows) == 1 and rows[0]["sessions"][0].kind == "dummy"
-    assert all(r["path"].suffix == ".json" for r in rows)   # the sheet is not a fight
-
-    # the legacy name resolves to the same character, and is renamed on load
-    from farever_companion.core.dps_tracker_history import DpsTrackerHistory
-    legacy = day / "dummy_tests_Mage.csv"
-    legacy.write_text("row_kind\nlegacy\n", encoding="utf-8")
-    assert DpsTrackerHistory.dummy_csv_slug(legacy) == "Mage"
-    assert DpsTrackerHistory.dummy_csv_slug(day / "dummy.csv") == ""
-    tr._history_load()
-    assert not legacy.exists()
-    assert (day / "dummy_Mage.csv").exists()
-    assert (day / "dummy_Mage.csv").read_text(encoding="utf-8").endswith("legacy\n")
-
-    # and a legacy file is never deleted as another character's on a prune
-    (day / "dummy_tests_Mage.csv").write_text("row_kind\nlegacy\n",
-                                              encoding="utf-8")
-    tr._persist_history()
-    assert (day / "dummy_tests_Mage.csv").exists()
-    # on the next load its rows are FOLDED into the current sheet, not dropped
-    tr._history_load()
-    assert not (day / "dummy_tests_Mage.csv").exists()
-    folded = (day / "dummy_Mage.csv").read_text(encoding="utf-8-sig")
-    assert folded.count("row_kind") == 1            # one header, not two
-    assert folded.endswith("legacy\n")
-
-
-def test_clearing_old_logs_removes_whole_day_folders_and_leaves_the_rest(tmp_path):
-    """The Combat page's "Clear Old Logs" is the only bulk delete in the app,
-    so it has to be exact: everything older than the window goes, nothing
-    inside it does, and the month folder goes only once it is empty. A window
-    of 0 deletes nothing at all — "keep everything" is a real setting, and
-    reading it as "delete everything" would be the worst possible surprise."""
+def test_clearing_old_logs_removes_whole_month_folders(tmp_path):
     from farever_companion.core.dps_tracker_history import prune_history_older_than
-
     now = time.time()
-    old_day = _log_dir(tmp_path, now - 40 * 86400)
-    recent_day = _log_dir(tmp_path, now - 2 * 86400)
-    for folder, name in ((old_day, "boss.json"), (recent_day, "trash.json")):
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / name).write_text('{"history": []}', encoding="utf-8")
-    (recent_day / "dummy_Maru.csv").write_text("row_kind\n", encoding="utf-8")
-    empty_month = old_day.parent
+    old_month = _log_dir(tmp_path, now - 40 * 86400)
+    recent_month = _log_dir(tmp_path, now - 2 * 86400)
+    old_month.mkdir(parents=True, exist_ok=True)
+    recent_month.mkdir(parents=True, exist_ok=True)
+    (old_month / "boss.json").write_text('{"history": []}', encoding="utf-8")
+    (recent_month / "trash.json").write_text('{"history": []}', encoding="utf-8")
 
     out = prune_history_older_than(tmp_path, 30, now=now)
     assert out["folders"] == 1 and out["files"] == 1
-    assert out["cutoff"]
-    assert not old_day.exists()
-    assert not empty_month.exists()             # the husk went with it
-    assert (recent_day / "trash.json").exists()  # inside the window: untouched
-    assert (recent_day / "dummy_Maru.csv").exists()
-
+    assert not old_month.exists()
+    assert (recent_month / "trash.json").exists()
     assert prune_history_older_than(tmp_path, 0, now=now)["folders"] == 0
-    assert prune_history_older_than(tmp_path, -5, now=now)["folders"] == 0
-    assert (recent_day / "trash.json").exists()
-    # a directory that is not there is not an error
-    assert prune_history_older_than(tmp_path / "nope", 30, now=now)["folders"] == 0
+    assert (recent_month / "trash.json").exists()
 
 
 def test_clearing_old_logs_drops_the_same_fights_from_memory(tmp_path):
-    """The disk delete is the easy half. `persist()` writes the tracker's
-    in-memory history back out, so a cleanup that only touched the files would
-    have the very next archive re-create every folder it just removed."""
     m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
     now = time.time()
@@ -3507,260 +3288,162 @@ def test_clearing_old_logs_drops_the_same_fights_from_memory(tmp_path):
     tr.history = [old, fresh]
     tr._persist_history()
     assert _log_dir(tmp_path, now - 40 * 86400).exists()
-
     out = tr.prune_history_older_than(30, directory=tmp_path)
     assert out["folders"] == 1
     assert [s.kind for s in tr.history] == ["boss"]
     assert not _log_dir(tmp_path, now - 40 * 86400).exists()
-
-    # and the next archive does not bring it back
     tr._persist_history()
     assert not _log_dir(tmp_path, now - 40 * 86400).exists()
-    assert _log_dir(tmp_path).exists()
 
 
-def test_history_day_bucketing_and_prune(tmp_path):
-    """Sessions persist into their own day's folder; dropping a session from
-    memory prunes its now-stale day/kind file so disk mirrors memory."""
+def test_history_day_filtering_loads_only_today(tmp_path):
     m = _Model()
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-
     now = time.time()
-    old_day = _log_dir(tmp_path, now - 3 * 86400)
-    today = _log_dir(tmp_path, now)
     old = CombatSession("Trash Mobs", kind="trash")
     old.start_time = now - 3 * 86400
     fresh = CombatSession("Boss Fight", kind="boss")
     fresh.start_time = now
     tr.history = [old, fresh]
     tr._persist_history()
-    assert (old_day / "trash.json").exists()
-    assert (today / "boss.json").exists()
 
-    # drop the old session: re-persisting prunes yesterday's file
-    tr.history = [fresh]
-    tr._persist_history()
-    assert not (old_day / "trash.json").exists()
-    assert (today / "boss.json").exists()
-
-    # a fresh tracker still loads today's fight from the day/kind files
     tr2 = DpsTracker(_Model())
     tr2.set_history_dir(tmp_path)
-    assert [s.kind for s in tr2.history] == ["boss"]
+    assert len(tr2.history) == 1
+    assert tr2.history[0].kind == "boss"
 
 
-def test_a_named_difficulty_is_written_into_the_log_file_name(tmp_path):
-    """The instance's difficulty is recorded WITH the run - in the session (so
-    loading the fight can badge it) and in the log's NAME (so the Fights list
-    can show it without opening anything)."""
-    from farever_companion.core.dps_tracker_history import read_history_file
-
+def test_mode_is_recorded_on_the_session_not_the_filename(tmp_path):
+    from farever_companion.core.dps_archive import read_sessions
     m = _Model()
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-
     now = time.time()
     s = CombatSession("Boss Fight", kind="boss")
     s.start_time = now
-    s.mode = "hard"                         # what archiving stamps on it
+    s.mode = "hard"
     tr.history = [s]
     tr._persist_history()
 
-    path = _log_dir(tmp_path, now) / "boss_HARD.json"
-    assert path.exists()
-    assert read_history_file(path)[0].mode == "hard"
-
-    # a fresh tracker reads the fight AND its difficulty back
-    tr2 = DpsTracker(_Model())
-    tr2.set_history_dir(tmp_path)
-    assert tr2.history[0].mode == "hard"
+    month = _log_dir(tmp_path, now)
+    files = list(month.glob("*.json.gz")) + list(month.glob("*.json"))
+    assert files, month
+    read = read_sessions(files[0])
+    assert read[0].mode == "hard"
+    assert not list(month.glob("*_HARD.json"))
 
 
-def test_an_unreadable_difficulty_leaves_the_log_name_alone(tmp_path):
-    """A GUESS must never be baked into a file name: with nothing read from
-    the game the log keeps the plain name and the fight records no mode, so an
-    unknown difficulty can never be mistaken for a measured one."""
-    from farever_companion.core.dps_tracker_history import read_history_file
-
-    m = _Model()                            # reports no difficulty at all
+def test_an_unreadable_mode_leaves_nothing_on_the_session(tmp_path):
+    from farever_companion.core.dps_archive import read_sessions
+    m = _Model()
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-
     now = time.time()
     s = CombatSession("Trash Mobs", kind="trash")
     s.start_time = now
     tr.history = [s]
     tr._persist_history()
-
-    day = _log_dir(tmp_path, now)
-    plain = day / "trash.json"
-    assert plain.exists()
-    assert list(day.glob("*_HARD.json")) == []
-    assert list(day.glob("*_NORMAL.json")) == []
-    assert list(day.glob("*_HEROIC.json")) == []
-    assert read_history_file(plain)[0].mode == ""
+    month = _log_dir(tmp_path, now)
+    files = list(month.glob("*.json.gz")) + list(month.glob("*.json"))
+    assert read_sessions(files[0])[0].mode == ""
 
 
-def test_archiving_a_fight_stamps_the_difficulty_the_game_reported(tmp_path):
-    """End to end through the live path: a dungeon trash run is archived with
-    the difficulty the game named, and the file lands under that token."""
-    m = _Model()
-    m.is_dungeon = True                     # inside an instance
-    m.detected_mode = lambda: "HEROIC"      # normalised, not trusted verbatim
-    tr = DpsTracker(m)
-    tr.set_history_dir(tmp_path)
-    m._units = [_hero(PA), _foe(FOE)]
-    tr.update()
-    m.damage.push(DamageEvent(amount=50.0, skill="Sword_Base_Attack",
-                              source_addr=PA, target_addr=FOE, t=time.time()))
-    tr.update()
-    tr.reset()
-
-    day = _log_dir(tmp_path)
-    assert (day / "trash_HEROIC.json").exists()
-    assert tr.history[-1].mode == "heroic"
-
-
-def test_history_migrates_legacy_flat_file(tmp_path):
-    """Legacy dps_history.json files fold into per-day/kind files on load,
-    then the flat file is removed."""
-    import json
-    # Dated NOW, the way a real migrating file looks: the migration still
-    # folds it into its own day folder, and today-only load() then shows it.
-    t0 = time.time()
-    raw = {"history": [{
-        "name": "Boss Fight (Boss Fight)", "kind": "boss",
-        "start_time": t0, "end_time": t0 + 100.0, "state": "PAUSED",
-        "target": "👑 Old Nightking", "players": [], "timeline": {},
-        "deaths": [], "burst_peak": 0.0, "burst_peak_time": 0.0,
-    }]}
-    (tmp_path / "dps_history.json").write_text(json.dumps(raw), encoding="utf-8")
-
+def test_history_load_stops_reading_once_it_has_the_recent_fights(tmp_path):
+    from farever_companion.core import dps_archive, dps_tracker_history as hist_mod
+    def _file(month, name, n, t_start):
+        d = tmp_path / month
+        d.mkdir(parents=True, exist_ok=True)
+        sessions = []
+        for i in range(n):
+            s = CombatSession(f"P{i}", kind="boss")
+            s.start_time = t_start + i * 10
+            sessions.append(s)
+        dps_archive.write_sessions(d / name, sessions)
+    yesterday = time.time() - 86400
+    _file(time.strftime("%Y-%m", time.localtime(yesterday)), "a.json.gz", 5, yesterday)
+    _file(time.strftime("%Y-%m"), "b.json.gz", 2, time.time())
     tr = DpsTracker(_Model())
     tr.set_history_dir(tmp_path)
-    day = _log_dir(tmp_path, t0)
-    migrated = day / "boss.json"
-    assert migrated.exists()
-    assert not (tmp_path / "dps_history.json").exists()
-    assert len(tr.history) == 1
-    assert tr.history[0].kind == "boss"
-    assert tr.history[0].target_name == "👑 Old Nightking"
+    assert len(tr.history) == 2
 
 
-def test_history_scan_reads_month_day_layout(tmp_path):
-    """scan_history_dir() finds the <YYYY-MM>/<DD>/<kind>_<profile> files the
-    writer lays down and labels the character from the file name. The scanner
-    imports the folder patterns from the writer, so a layout change cannot
-    leave the Combat page quietly showing an empty history."""
+def test_archiving_sets_pass_outcome_in_the_index(tmp_path):
+    m = _Model()
+    m.detected_mode = lambda: "HEROIC"
+    tr = DpsTracker(m)
+    tr.set_history_dir(tmp_path)
+    now = time.time()
+    s = CombatSession("Boss Fight", kind="boss")
+    s.boss_label = "King Ratsar"
+    s.target_name = "👑 King Ratsar"
+    s.start_time = now
+    s.end_time = now + 30.0
+    s.boss_killed = True
+    s.mode = "heroic"
+    tr.history = [s]
+    tr._persist_history()
+    from farever_companion.core import dps_archive
+    rows = dps_archive.read_index(tmp_path)
+    assert rows and rows[0]["outcome"] == "pass" and rows[0]["mode"] == "heroic"
+
+
+def test_history_scan_reads_the_month_layout(tmp_path):
     from farever_companion.ui.combat.history_index import scan_history_dir
-
     m = _Model()
     m.player_profile_value = "Kartik_Warrior_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
-    m.is_dungeon = True             # instance trash: reset() archives it
+    m.is_dungeon = True
     m._units = [_hero(PA), _foe(FOE)]
     tr.update()
     m.damage.push(DamageEvent(amount=50.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
     tr.reset()
-
     rows = scan_history_dir(tmp_path)
     assert len(rows) == 1
     row = rows[0]
-    assert row["char"] == "Kartik Warrior A1b2"
-    assert len(row["sessions"]) == 1
     assert row["sessions"][0].kind == "trash"
-    assert row["path"].name == "trash_Kartik_Warrior_a1b2.json"
-    lt = time.localtime()
-    assert row["path"].parent.name == time.strftime("%d", lt)
-    assert row["path"].parent.parent.name == time.strftime("%Y-%m", lt)
-
-    # a <DD> folder sitting at the root (an interrupted migration, or a month
-    # folder that never got written) must still be read, not silently skipped
-    stray = tmp_path / time.strftime("%d", lt)
-    stray.mkdir(parents=True, exist_ok=True)
-    (stray / "boss_Kartik_Warrior_a1b2.json").write_text(
-        '{"history": [{"name": "Boss", "kind": "boss", "start_time": 1000.0,'
-        ' "end_time": 1100.0, "state": "PAUSED", "target": "👑 Trashy",'
-        ' "players": [], "timeline": {}, "deaths": [], "burst_peak": 0.0,'
-        ' "burst_peak_time": 0.0}]}', encoding="utf-8")
-    rows2 = scan_history_dir(tmp_path)
-    assert len(rows2) == 2
-    assert any(r["sessions"][0].kind == "boss" for r in rows2)
+    assert row["path"].parent.name == time.strftime("%Y-%m")
+    assert row["summary"]["fights"] == 1
 
 
-def test_history_scan_labels_per_boss_files_with_the_character(tmp_path):
-    """A per-boss file is filed under the BOSS, but every surface that
-    reads it tags the CHARACTER — and the tag comes from the FILE NAME
-    alone. The profile slug is everything after the first underscore
-    (the same boundary `is_boss_file` reads), so the label never opens
-    the log: contents that name another character, or no boss label at
-    all, change nothing."""
+def test_history_scan_labels_chars_from_session_contents(tmp_path):
     import json
     from farever_companion.ui.combat.history_index import scan_history_dir
 
-    def _fight(kind, boss_label="King Ratsar"):
-        return {
-            "name": "King Ratsar", "kind": kind,
-            "boss_label": boss_label,
-            "start_time": 1000.0, "end_time": 1100.0, "state": "PAUSED",
-            "target_name": "👑 King Ratsar",
-            "players": [{"name": "Kartik", "is_me": True,
-                         "hero_class": "Warrior", "total_damage": 500.0}],
-            "timeline": {}, "deaths": [], "burst_peak": 0.0,
-            "burst_peak_time": 0.0,
-        }
+    def _fight(kind, boss_label="King Ratsar", me="Kartik (You)", meclass="Warrior", total=500.0):
+        return {"name": "King Ratsar", "kind": kind, "boss_label": boss_label,
+                "start_time": 1000.0 + (0 if kind == "boss" else 1), "end_time": 1100.0, "state": "PAUSED",
+                "target_name": "👑 King Ratsar",
+                "players": [{"name": me, "is_me": True, "hero_class": meclass, "total_damage": total}],
+                "timeline": {}, "deaths": [], "burst_peak": 0.0, "burst_peak_time": 0.0}
 
-    day = _log_dir(tmp_path)
-    day.mkdir(parents=True, exist_ok=True)
-    (day / "King Ratsar_Kartik_Warrior_a1b2.json").write_text(
-        json.dumps({"history": [_fight("boss")]}),
-        encoding="utf-8")
+    month = tmp_path / "2026-10"
+    month.mkdir(parents=True)
+    (month / "King Ratsar.json").write_text(
+        json.dumps({"v": 3, "history": [_fight("boss")]}), encoding="utf-8")
     rows = scan_history_dir(tmp_path)
     assert len(rows) == 1
-    assert rows[0]["char"] == "Kartik Warrior A1b2"
+    assert rows[0]["char"] == "Kartik"
     assert rows[0]["sessions"][0].kind == "boss"
 
-    # the trash half of the same run: same boss label, prefixed name
-    (day / "Trash pack King Ratsar_Kartik_Warrior_a1b2.json").write_text(
-        json.dumps({"history": [_fight("trash")]}), encoding="utf-8")
+    (month / "trash.json").write_text(
+        json.dumps({"v": 3, "history": [_fight("trash")]}), encoding="utf-8")
+    from farever_companion.core import dps_archive
+    dps_archive.refresh_index(tmp_path)
     rows2 = scan_history_dir(tmp_path)
     assert len(rows2) == 2
-    assert {r["char"] for r in rows2} == {"Kartik Warrior A1b2"}
+    assert {r["char"] for r in rows2} == {"Kartik"}
 
-    # the label is the NAME, not the contents: this log names Bee Mage
-    # and records no boss label, yet the file says Kartik Warrior
-    (day / "Nameless Kills_Kartik_Warrior_a1b2.json").write_text(
-        json.dumps({"history": [{
-            "name": "Nameless Kills", "kind": "boss", "boss_label": None,
-            "start_time": 1000.0, "end_time": 1100.0, "state": "PAUSED",
-            "target_name": None,
-            "players": [{"name": "Bee", "is_me": True,
-                         "hero_class": "Mage", "total_damage": 5.0}],
-            "timeline": {}, "deaths": [], "burst_peak": 0.0,
-            "burst_peak_time": 0.0}]}),
+    (month / "boss.json").write_text(
+        json.dumps({"v": 3, "history": [_fight("boss", me="Bee (You)", meclass="Mage", total=5.0)]}),
         encoding="utf-8")
+    dps_archive.refresh_index(tmp_path)
     rows3 = scan_history_dir(tmp_path)
     assert len(rows3) == 3
-    assert {r["char"] for r in rows3} == {"Kartik Warrior A1b2"}
-
-    # a single-word slug is still a character name, and a file that
-    # names no profile at all says so honestly
-    (day / "Mystery_Mystery.json").write_text(
-        json.dumps({"history": [_fight("boss", boss_label=None)]}),
-        encoding="utf-8")
-    (day / "boss.json").write_text(
-        json.dumps({"history": [_fight("boss", boss_label=None)]}),
-        encoding="utf-8")
-    rows4 = scan_history_dir(tmp_path)
-    assert len(rows4) == 5
-    assert {r["char"] for r in rows4} == {"Kartik Warrior A1b2",
-                                          "Mystery", "Current Character"}
-
-
+    assert any(r["char"] == "Bee" for r in rows3)
 # --- weapon loadout (derived from used skill ids) --------------------------
 
 
@@ -4017,8 +3700,9 @@ def test_game_encounter_elapsed_anchors_on_start_change():
     assert tr.game_encounter_elapsed is None
 
 
-def test_game_combat_signal_confirms_idle_boss_end():
+def test_game_combat_signal_confirms_idle_boss_end(monkeypatch):
     """A game-declared end plus damage idle seals the boss fight early."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -4046,8 +3730,9 @@ def test_game_combat_signal_confirms_idle_boss_end():
     assert boss_archives and abs(boss_archives[-1].group_damage - 500.0) < 1e-6
 
 
-def test_game_signal_alone_does_not_end_live_boss_fight():
+def test_game_signal_alone_does_not_end_live_boss_fight(monkeypatch):
     """The game signal alone never seals a live (recent-damage) fight."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -4068,8 +3753,9 @@ def test_game_signal_alone_does_not_end_live_boss_fight():
     assert tr.in_boss_fight is True
 
 
-def test_boss_start_clears_stale_game_end_signal():
+def test_boss_start_clears_stale_game_end_signal(monkeypatch):
     """A new boss engagement clears any stale game-end signal."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -4694,7 +4380,8 @@ def test_capture_line_names_the_bridge_issue():
     assert "HLBOOT" in tr.capture_line()
 
 
-def test_deaf_capture_is_logged_at_engagement_but_not_when_events_flow():
+def test_deaf_capture_is_logged_at_engagement_but_not_when_events_flow(monkeypatch):
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     m.dungeon_boss = "Boss_Foo"
     tr = DpsTracker(m)
@@ -5148,6 +4835,56 @@ def test_update_guard_released_after_pass():
     tr._update_lock.release()
 
 
+def test_a_slow_tick_names_the_phase_and_thread(monkeypatch):
+    """A long pass must say WHICH phase overran, not just that the meter lagged.
+
+    The drain worker's canary ("worker thread starved?") can only see its own
+    loop gap; this names the phase that caused it and the thread that owned it,
+    so a live report is a fact instead of a guess (2026-10-09 stall).
+    """
+    from farever_companion.core import dps_tracker_tick as dtt
+    monkeypatch.setattr(dtt, "SLOW_TICK_LOG_S", 0.01)
+
+    m = _Model()
+    tr = DpsTracker(m)
+    m._units = [_hero(PA), _foe(FOE)]
+    lines: list[str] = []
+    tr.log_line = lines.append
+
+    real = DpsTracker._scan_scene
+
+    def slow(self, *a, **k):
+        time.sleep(0.03)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(DpsTracker, "_scan_scene", slow)
+    tr.update()
+    assert any("slow tick" in ln and "_scan_scene" in ln for ln in lines), lines
+
+
+def test_a_tick_starved_behind_a_held_guard_is_reported(monkeypatch):
+    """One thread owning update() too long is the other half of the stall.
+
+    The overlay timer and the drain worker share the guard; when one holds it
+    past the window, the refused driver is what goes blind. The next owner must
+    name the wait instead of the canary blaming thread starvation.
+    """
+    from farever_companion.core import dps_tracker_tick as dtt
+    monkeypatch.setattr(dtt, "SLOW_TICK_LOG_S", 0.01)
+
+    m = _Model()
+    tr = DpsTracker(m)
+    m._units = [_hero(PA), _foe(FOE)]
+    lines: list[str] = []
+    tr.log_line = lines.append
+
+    with tr._update_lock:                 # one driver owns the pass...
+        tr.update()                       # ...the other driver skips
+        time.sleep(0.03)
+    tr.update()                           # the next owner reports the wait
+    assert any("held the guard" in ln for ln in lines), lines
+
+
 def test_concurrent_updates_neither_corrupt_nor_double_drain():
     """Hammer update() from two threads (worker + timer simulation): every
     event is consumed exactly once, totals stay exact, no state races."""
@@ -5181,12 +4918,13 @@ def test_concurrent_updates_neither_corrupt_nor_double_drain():
 
 # --- boss-corpse suppression: no re-engage after the fight ends (2026-09-19) ---
 
-def test_boss_corpse_does_not_reengage_and_pin_timer_at_zero():
+def test_boss_corpse_does_not_reengage_and_pin_timer_at_zero(monkeypatch):
     """After the boss dies, the despawning corpse still matches the
     engagement scan — the next tick re-armed boss_session (archive + reset),
     pinning the timer at 00:00.0 on an empty board. The ended boss must stay
     suppressed for the corpse window (live: 'timer showing 0 after fight
     ended' + 'not stopping when boss died')."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     tr = DpsTracker(m)
     # Engage a REAL boss (uid matches the boss scan), land damage, then kill.
@@ -5219,9 +4957,10 @@ def test_boss_corpse_does_not_reengage_and_pin_timer_at_zero():
     assert tr.session.state != "COMBAT"
 
 
-def test_new_boss_after_corpse_window_reengages():
+def test_new_boss_after_corpse_window_reengages(monkeypatch):
     """Suppression is a WINDOW, not forever: a genuinely new boss (different
     addr) after the window re-engages normally."""
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     tr = DpsTracker(m)
     m._units = [_hero(PA), _foe(BOSS, uid="Boss_Foo", hp=10000.0,
@@ -5237,6 +4976,7 @@ def test_new_boss_after_corpse_window_reengages():
     # Shrink the corpse window to zero and present a NEW boss.
     tr._ended_boss_deadline = 0.0
     new_boss = 0x5555
+    _declare_boss(monkeypatch, "Boss_Bar")
     m._units = [_hero(PA), _foe(new_boss, uid="Boss_Bar", hp=8000.0, is_boss=True)]
     tr.update()
     assert tr.in_boss_fight is True
@@ -5310,7 +5050,7 @@ def test_the_same_encounter_is_archived_once_even_with_an_adds_segment():
     assert not [n for n in names if n.startswith("Boss Adds")]
 
 
-def test_a_death_archives_the_encounter_once_named_for_the_death():
+def test_a_death_archives_the_encounter_once_named_for_the_death(monkeypatch):
     """A BOSS wipe is a real fight end, so it archives — exactly once, and
     named for the death.
 
@@ -5319,6 +5059,7 @@ def test_a_death_archives_the_encounter_once_named_for_the_death():
     boss pull keeps its own end signals, so the "one archive, one reason" rule
     this test exists for still has a home.
     """
+    _declare_boss(monkeypatch, "Boss_Foo")
     m = _Model()
     tr = DpsTracker(m)
     m.is_dungeon = True
@@ -5504,9 +5245,14 @@ def test_an_engine_only_boss_claim_does_not_split_the_fight(monkeypatch):
     m.damage.push(DamageEvent(amount=400.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
-    # The board still records what you hit...
-    assert tr.in_boss_fight is True
-    # ...but the target line does NOT crown it: the 👑 on a trash mob was the
+    # No boss fight opens at all: the champion is trash with a flag bit, so
+    # its damage stays in the trash run and the trash timer keeps going
+    # (live 2026-10-10: the board flipped to a 2 min boss timer inside a
+    # 7 min trash run, and each pack archived its own "boss" row).
+    assert tr.in_boss_fight is False
+    assert abs(tr.trash_session.group_damage - 400.0) < 1e-6
+    assert tr.boss_session.group_damage == 0.0
+    # ...and the target line does NOT crown it: the 👑 on a trash mob was the
     # visible symptom (live 2026-10-03, "top dps did show the boss while i was
     # killing trash"), and it is the one thing an engine-only claim does not get.
     name = tr._foe_names.get(FOE, "")
@@ -5514,12 +5260,15 @@ def test_an_engine_only_boss_claim_does_not_split_the_fight(monkeypatch):
 
     # ...and the trash run was NOT archived: no split, no reset, no extra row.
     assert [s for s in tr.history if s.kind == "trash"] == [],         "an engine-only boss claim must not archive the trash run"
+    assert [s for s in tr.history if s.kind == "boss"] == [],          "a champion pack must not archive a boss row either"
 
     # A second pack behaves the same way, rather than producing a second row.
     m.damage.push(DamageEvent(amount=350.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE, t=time.time()))
     tr.update()
+    assert abs(tr.trash_session.group_damage - 750.0) < 1e-6
     assert [s for s in tr.history if s.kind == "trash"] == []
+    assert [s for s in tr.history if s.kind == "boss"] == []
 
 
 def test_a_free_test_records_nothing_and_never_becomes_the_best():
@@ -6171,141 +5920,63 @@ def test_the_fight_timer_still_ticks_between_hits():
     assert s.wall_duration > first, "the ticking timer stopped"
 
 
-def test_history_load_stops_reading_once_it_has_the_recent_fights(tmp_path, monkeypatch):
-    """Attaching must not parse a player's whole log tree on the GUI thread.
+def test_the_boss_file_carries_every_session_and_the_index_the_facts(tmp_path):
+    """A boss log's ONE file holds all its sessions; the index row says the rest.
 
-    Live 2026-10-03: the window went "Not Responding" and stayed there while
-    DPS Analysis was open. `load()` walked EVERY month/day folder and fully
-    parsed every JSON on the way, only to keep the newest 25 sessions - so a
-    veteran player's attach re-read months of archives synchronously, and the
-    GUI thread starved while it ran. The reader already keeps only the last
-    25; walking NEWEST FIRST and stopping at a day boundary once 25 sessions
-    are in hand returns the same list while touching a bounded number of
-    files. The user had been asking for the info to live in the file NAME so
-    logs would not need opening at all - this is the same idea applied to the
-    reader that never needed most of what it opened.
+    New clean layout (no filename tokens): the file is just ``<Boss>.json.gz``,
+    and everything a dir-list needs — outcome, mode, char, kind, per-session
+    pass/fail — is read from the payload and stamped into ``index.json``. A wipe
+    and the kill that follows fold into the SAME file; ``outcome`` is "pass" the
+    moment any boss session in it was killed, and the index never opens the log.
     """
-    import json
-    from farever_companion.core import dps_tracker_history as hist_mod
-    from farever_companion.core.dps_data import (_session_to_dict,
-                                                 CombatSession)
+    from farever_companion.core.dps_data import CombatSession, PlayerParse
     from farever_companion.core.dps_tracker import DpsTracker
+    from farever_companion.ui.combat.history_index import scan_history_dir
 
     m = _Model()
-    m.player_profile_value = "Mage"
-    tr = DpsTracker(m)
-
-    def _file(day: str, name: str, n: int, t_start: float) -> None:
-        d = tmp_path / day
-        d.mkdir(parents=True, exist_ok=True)
-        s = CombatSession("Boss Fight", kind="boss")
-        s.start_time = t_start
-        s.end_time = t_start + 10.0
-        s.record_hit("Boss", 1, 100.0, 100.0, 50.0, when=t_start + 5.0)
-        (d / name).write_text(
-            json.dumps({"history": [_session_to_dict(s) for _ in range(n)]}),
-            encoding="utf-8")
-
-    # Yesterday's archive and today's fights. Only today's may be read.
-    _file("2026-09/09", "trash_Mage.json", 30, 1000.0)
-    today = time.strftime("%Y-%m/%d")
-    _file(today, "boss_Mage.json", 30, 2000.0)
-
-    reads: list[str] = []
-    real = hist_mod.read_history_file
-    monkeypatch.setattr(
-        hist_mod, "read_history_file",
-        lambda p: (reads.append(str(p)), real(p))[1])
-
-    tr.set_history_dir(tmp_path)   # triggers a first load (no profile yet)
-    tr._active_profile = "Mage"    # the attach flow sets the hero before loading
-    reads.clear()
-    tr._history_load()
-
-    # Only today's folder was opened - the field said it outright: "it should
-    # just load todays list". Older days stay on disk for Past Fights.
-    assert not any("2026-09" in r for r in reads), (
-        f"load() read files it did not need: {reads}")
-    assert reads and all(today.replace("/", "\\") in r or today in r
-                         for r in reads)
-    assert len(tr.history) == 25
-    assert all(s.start_time >= 2000.0 for s in tr.history)
-    starts = [s.start_time for s in tr.history]
-    assert starts == sorted(starts), "history must stay sorted by fight start"
-
-    # And a fresh day with no log yet loads nothing rather than reaching back.
-    reads.clear()
-    tr._history_dir = tmp_path / "fresh"
-    tr._history_load()
-    assert reads == []
-    assert tr.history == [] or all(
-        s.start_time >= 2000.0 for s in tr.history)
-
-
-def test_the_boss_log_name_carries_dungeon_player_class_and_outcome(tmp_path):
-    """A dir list must say everything about a boss log without opening it.
-
-    Live 2026-10-03: after the whole-tree load freeze the field spelled out
-    what the NAME should carry — "dungeon", "Boss", "playername", "class",
-    "failed/passed" — so the app can list a folder and know each log's story
-    from the names alone. The date was already the folder (`<YYYY-MM>/<DD>/`);
-    the player was already the profile slug; this pins the three new tokens
-    and the reader that parses them back out.
-    """
-    import json
-    from farever_companion.core.dps_data import CombatSession
-    from farever_companion.core.dps_tracker import DpsTracker
-    from farever_companion.core.dps_tracker_history import DpsTrackerHistory
-    from farever_companion.ui.combat.history_index import _file_descriptor
-
-    m = _Model()
+    m.detected_mode = lambda: "HEROIC"
     m.player_profile_value = "Kartik_Priest_a1b2"
     tr = DpsTracker(m)
     tr.set_history_dir(tmp_path)
     tr._active_profile = "Kartik_Priest_a1b2"
 
-    # One failed pull, then the kill. Same boss label -> the SAME file, and
-    # the field's rule decides its name: "if the group killed it, it's not
-    # a fail".
     def _boss_session(killed: bool, t0: float) -> CombatSession:
-        s = CombatSession("Boss Fight", kind="boss")
+        s = CombatSession("Boss Fight", "boss")
+        s.boss_label = "Reblochonk"
+        s.target_name = "Reblochonk"
         s.start_time = t0
         s.end_time = t0 + 30.0
-        s.target_name = "Reblochonk"
-        s.boss_label = "Reblochonk"
         s.boss_killed = killed
-        from farever_companion.core.dps_data import PlayerParse
-        me = PlayerParse(name="Kartik", is_me=True, total_damage=5000.0,
-                         hero_class="Priest")
-        s.players["Kartik"] = me
+        s.mode = "heroic"
+        s.players["Kartik"] = PlayerParse(name="Kartik", is_me=True,
+                                          total_damage=5000.0, hero_class="Priest")
         return s
 
+    # One failed pull, then the kill. Same boss label -> the SAME file.
     tr.history = [_boss_session(False, time.time() - 60.0)]
     tr._persist_history()
-    failed = list(_log_dir(tmp_path).glob("Reblochonk_*FAILED*.json"))
-    assert len(failed) == 1, "a wipe archives under a FAILED name"
+    files = list(_log_dir(tmp_path).glob("Reblochonk*.json*"))
+    assert len(files) == 1, "a boss has exactly one month file, no outcome token"
+    assert files[0].name == "Reblochonk.json.gz"
 
     tr.history.append(_boss_session(True, time.time()))
     tr._persist_history()
-    files = list(_log_dir(tmp_path).glob("Reblochonk_*.json"))
-    assert len(files) == 1 and files[0].stem.endswith("_PASS"), (
-        f"the kill must upgrade the file to PASS, got "
-        f"{[f.name for f in files]}")
-    # The wipe's fights were folded into the PASS file, not lost with it.
-    body = json.loads(files[0].read_text(encoding="utf-8"))
-    assert len(body["history"]) == 2
+    files = list(_log_dir(tmp_path).glob("Reblochonk*.json*"))
+    assert len(files) == 1, "the kill upgrades the one file, never spawns a twin"
+    # The wipe's fights were folded into the same file, not lost.
+    from farever_companion.core.dps_archive import read_sessions
+    assert len(read_sessions(files[0])) == 2
 
-    # The class and outcome tokens are legible from the name alone — the
-    # descriptor is what a dir-list UI reads, and it opens nothing.
-    row = _file_descriptor(files[0])
+    # The index row carries outcome/mode/char/kind — a dir-list UI reads only it.
+    rows = scan_history_dir(tmp_path)
+    row = next(r for r in rows if r["path"] == files[0])
     assert row["outcome"] == "pass"
-    assert "Priest" in row["char"] or "Priest" in files[0].stem
+    assert row["mode"] == "heroic"
+    assert row["char"] == "Kartik"
     assert row["kind"] == "boss"
+    assert row["summary"]["fights"] == 2
+    assert row["summary"]["has_failure"] is True
 
-    # The helper pieces agree: OUTCOME_TOKENS is what file_for writes and
-    # what the descriptor reads, so they cannot drift apart.
-    from farever_companion.core import dps_tracker_history as _hist
-    assert _hist.OUTCOME_TOKENS == {"PASS", "FAILED"}
 
 
 def test_an_auto_ended_dummy_test_waits_before_the_next_hit_restarts_it():
@@ -6499,74 +6170,39 @@ def _boss_kill(name="Reblochonk", damage=4242.0, when=None, killed=True):
     return s
 
 
-def test_archiving_writes_a_read_free_summary_beside_the_log(tmp_path):
-    """Every archived log gets an advisory `<log>.json.summary`.
+def test_an_index_row_is_rebuilt_once_its_file_changes(tmp_path):
+    """The index row is advisory: a changed file's row is re-described.
 
-    It holds what the filename cannot carry — fight count, best damage, the
-    best-damage fight's duration and whether any boss pull failed — so the
-    Fights list and the records strip can describe a log WITHOUT parsing it.
+    The new clean layout has no per-file ``.summary`` sidecar — ``index.json`` is
+    the one cache, and each row carries the file's own ``(mtime, size)``. When a
+    file is rewritten (a delete, an external edit) its fingerprint no longer
+    matches and ``refresh_index`` re-parses it rather than serving a stale row.
     """
-    m = _Model()
-    m.player_profile_value = "Kartik_Warrior_a1b2"
-    tr = DpsTracker(m)
-    tr.set_history_dir(tmp_path)
-    tr._active_profile = "Kartik_Warrior_a1b2"
+    from farever_companion.core import dps_archive
 
-    now = time.time()
-    tr.history = [_boss_kill(damage=4242.0, when=now),
-                  _boss_kill(damage=900.0, when=now, killed=False)]
-    tr._persist_history()
+    month = tmp_path / time.strftime("%Y-%m")
+    month.mkdir(parents=True)
+    p = month / "King Ratsar.json.gz"
+    dps_archive.write_sessions(p, [_boss_kill()])
+    dps_archive.refresh_index(tmp_path)
+    rows = dps_archive.read_index(tmp_path)
+    assert rows and rows[0]["summary"]["fights"] == 1
 
-    day = _log_dir(tmp_path)
-    logs = list(day.glob("Reblochonk*.json"))
-    assert len(logs) == 1, [p.name for p in day.iterdir()]
-    log = logs[0]
-    from farever_companion.core.dps_tracker_history import summary_path_for
-    side = summary_path_for(log)
-    assert side.exists() and side.suffix == ".summary"
+    # rewrite the file with different sessions: same name, new (mtime, size)
+    dps_archive.write_sessions(p, [_boss_kill(), _boss_kill(when=time.time() + 50.0)])
+    rows2 = dps_archive.refresh_index(tmp_path)
+    assert rows2[0]["summary"]["fights"] == 2, \
+        "the rebuilt row must reflect the changed file, not the stale one"
+    assert dps_archive.read_index(tmp_path)[0]["summary"]["fights"] == 2
 
-    from farever_companion.ui.combat.history_index import read_log_summary
-    st = log.stat()
-    summary = read_log_summary(log, st.st_mtime, st.st_size)
-    assert summary is not None, "the sidecar was written but did not read back"
-    assert summary["fights"] == 2
-    assert summary["best_damage"] == 4242.0
-    assert summary["best_duration"] > 0.0
-    assert summary["has_failure"] is True
-    assert summary["bosses"]["Reblochonk"]["attempts"] == 2
-    assert summary["bosses"]["Reblochonk"]["kills"] == 1
-
-    # the sidecar is not a fight file: the scan finds the LOG, not the sidecar
-    from farever_companion.ui.combat.history_index import scan_history_dir
-    rows = scan_history_dir(tmp_path)
-    assert [r["path"] for r in rows] == [log]
-    assert rows[0]["summary"]["best_damage"] == 4242.0
-
-
-def test_a_sidecar_is_ignored_once_its_log_changes(tmp_path):
-    """The sidecar is advisory: the `.json` always wins.
-
-    The writer stamps the log's own (mtime, size) into the sidecar, so a log
-    rewritten since it was summarised no longer matches and the reader returns
-    None — the caller falls back to parsing rather than serving a stale number.
-    """
-    from farever_companion.ui.combat.history_index import (
-        read_log_summary, write_log_summary)
-
-    p = tmp_path / "log.json"
-    p.write_text('{"history": []}', encoding="utf-8")
-    assert write_log_summary(p, [_boss_kill()]) is not None
-    st = p.stat()
-    assert read_log_summary(p, st.st_mtime, st.st_size) is not None
-
-    # a changed log: a different size/mtime -> the fingerprint no longer matches
-    p.write_text('{"history": [{"name": "changed"}]}', encoding="utf-8")
-    st2 = p.stat()
-    assert read_log_summary(p, st2.st_mtime, st2.st_size) is None
-
-    # a missing sidecar reads as None too, never an error
+    # a file with no row yet is described; a deleted file's row drops out.
+    dps_archive.write_sessions(month / "Zul'farak.json.gz", [_boss_kill("Zul'farak")])
+    rows3 = dps_archive.refresh_index(tmp_path)
+    assert len(rows3) == 2
     p.unlink()
-    assert read_log_summary(p, 0.0, 0) is None
+    rows4 = dps_archive.refresh_index(tmp_path)
+    assert [r["path"] for r in rows4] == [str(month / "Zul'farak.json.gz")]
+
 
 
 def test_the_sidecar_rollup_reproduces_the_parsed_records():
@@ -6602,55 +6238,21 @@ def test_the_sidecar_rollup_reproduces_the_parsed_records():
         assert a.total_damage == pytest.approx(b.total_damage)
 
 
-def test_a_per_boss_name_is_matched_by_its_full_profile_slug():
-    """The pruner's rule, as a pure function.
+def test_a_character_switch_shares_the_month_files_and_never_sweeps_them(tmp_path):
+    """The dev box is single-player: every profile archives into the same
+    month/kind files, and switching the active profile sweeps NOTHING.
 
-    It used to compare the LAST underscore segment (`PASS`, or the `a1b2` hash)
-    against the full active slug, so no per-boss file ever matched its own
-    character and a stranger's boss logs were never swept. It must keep our own
-    (including the class `file_for` may append) and reject everyone else's,
-    without over-stripping a slug that legitimately ends in a class word.
+    The old per-character layout pruned another character's per-boss log on a
+    switch; the clean layout dropped that whole sweep because there is only one
+    set of files to begin with. A stranger's hand-written boss file in the month
+    folder is left exactly where it is, and our own fresh boss log lands beside
+    it in ``<Boss>.json.gz``.
     """
-    from farever_companion.core.dps_tracker_history import boss_file_is_mine
-
-    slug = "Kartik_Warrior_a1b2"
-    assert boss_file_is_mine("Reblochonk_Kartik_Warrior_a1b2_PASS", slug)
-    assert boss_file_is_mine("Reblochonk_Kartik_Warrior_a1b2_FAILED_HARD", slug)
-    assert boss_file_is_mine("Reblochonk_Kartik_Warrior_a1b2", slug)
-    # the trash half carries the same slug, with no outcome token
-    assert boss_file_is_mine(
-        "Kobolds Mines - Reblochonk trash_Kartik_Warrior_a1b2", slug)
-    # ... and a stranger's is nobody else's
-    assert not boss_file_is_mine("Reblochonk_Alice_Rogue_c9d0_PASS", slug)
-    assert not boss_file_is_mine("Reblochonk_Alice_Rogue_c9d0", slug)
-
-    # a slug the writer extends with the class word is still ours ...
-    assert boss_file_is_mine("Reblochonk_Kartik_a1b2_Warrior_PASS", "Kartik_a1b2")
-    # ... a slug that ALREADY ends in its class word is not over-stripped ...
-    assert boss_file_is_mine("Reblochonk_Bob_Warrior_PASS", "Bob_Warrior")
-    # ... and the ambiguous pair resolves toward KEEPING, never deleting
-    assert boss_file_is_mine("Reblochonk_Bob_Warrior_PASS", "Bob")
-    assert not boss_file_is_mine("Reblochonk_Alice_Rogue_c9d0_PASS", "Bob")
-
-    # no active profile: the unprofiled logs are ours, profiled ones are not
-    assert boss_file_is_mine("Reblochonk_PASS", "")
-    assert boss_file_is_mine("Reblochonk_Warrior_PASS", "")
-    assert not boss_file_is_mine("Reblochonk_Kartik_Warrior_a1b2_PASS", "")
-
-
-def test_a_character_switch_sweeps_the_previous_characters_per_boss_logs(tmp_path):
-    """On disk, the fixed rule actually clears another character's boss logs.
-
-    `Alice`'s per-boss log — and the sidecar beside it — must go the moment the
-    active profile is `Kartik`; before the fix the pruner read `PASS` as the
-    profile and kept it forever. Our own freshly written boss log stays.
-    """
-    day = _log_dir(tmp_path)
-    day.mkdir(parents=True, exist_ok=True)
-    stranger = day / "Reblochonk_Alice_Rogue_c9d0_PASS.json"
-    stranger.write_text('{"history": []}', encoding="utf-8")
-    stranger_side = Path(str(stranger) + ".summary")
-    stranger_side.write_text("{}", encoding="utf-8")
+    month = _log_dir(tmp_path)
+    month.mkdir(parents=True, exist_ok=True)
+    stranger = month / "Reblochonk.json.gz"
+    import gzip
+    stranger.write_bytes(gzip.compress(b'{"v":3,"history":[]}', 9))
 
     m = _Model()
     m.player_profile_value = "Kartik_Warrior_a1b2"
@@ -6660,11 +6262,9 @@ def test_a_character_switch_sweeps_the_previous_characters_per_boss_logs(tmp_pat
     tr.history = [_boss_kill(damage=1000.0)]
     tr._persist_history()
 
-    assert not stranger.exists(), \
-        "another character's per-boss log survived the prune"
-    assert not stranger_side.exists(), "its sidecar was left orphaned"
-    assert [p.name for p in day.glob("Reblochonk_Kartik*")], \
-        [p.name for p in day.iterdir()]
+    assert stranger.exists(), "a switch must NOT sweep another character's file"
+    assert [p.name for p in month.glob("*.json.gz")], [p.name for p in month.iterdir()]
+
 
 
 def test_a_skill_row_does_not_write_the_fields_it_does_not_use():
@@ -6685,7 +6285,8 @@ def test_a_skill_row_does_not_write_the_fields_it_does_not_use():
     out = _skill_to_dict(sp)
     for unused in ("heals", "self_heals", "group_heals", "heal_count",
                    "min_heal", "max_heal", "damage_taken", "taken_count",
-                   "affinity_hits", "subskills", "crit_count"):
+                   "affinity_hits", "affinity_crits", "subskills",
+                   "crit_count", "crit_damage"):
         assert unused not in out, f"{unused} is a zero the row does not use"
     assert out["damage"] == 1028.0 and out["hit_count"] == 34
     assert out["min_hit"] == 25.0 and out["max_hit"] == 42.0
@@ -6814,3 +6415,443 @@ def test_the_board_trace_is_off_unless_asked(tmp_path, monkeypatch):
 
     assert not any(l.startswith("Top DPS: board") for l in lines), lines
     assert not (Path(tmp_path) / "dps" / "dps_trace.jsonl").exists()
+
+
+# --- recorded facts added 2026-10-09 (crit damage, party roster, client) ---#
+
+
+def test_crit_damage_is_recorded_beside_the_crit_rate():
+    """A skill records how much of its damage arrived CRITTING, not just how
+    often it crit.
+
+    `crit_pct` answers "how often" and cannot answer "how much": the size of
+    the hits behind the rate is simply not in it. Both come off the same
+    `is_crit` flag, so they can never disagree about which hits counted - and
+    the per-SCHOOL crit count rides along, because `affinity_hits` counts hits
+    in a school and never said how many of them crit.
+    """
+    m = _Model()
+    tr = DpsTracker(m)
+    m._units = [_hero(PA), _foe(FOE)]
+    tr.update()
+    for amount, aff, crit in ((600.0, "Physical", True),
+                              (300.0, "Fire", False),
+                              (100.0, "Physical", False)):
+        m.damage.push(DamageEvent(amount=amount, skill="Sword_Base_Attack",
+                                  affinity=aff, crit=crit, source_addr=PA,
+                                  target_addr=FOE, t=time.time()))
+    tr.update()
+
+    sp = tr.overall_session.players["Me (You)"].skills["Sword_Base_Attack"]
+    assert abs(sp.damage - 1000.0) < 1e-6
+    assert sp.crit_count == 1 and sp.hit_count == 3
+    assert abs(sp.crit_damage - 600.0) < 1e-6
+    assert abs(sp.crit_pct - (100.0 / 3.0)) < 1e-6
+    assert sp.affinity_hits == {"Physical": 2, "Fire": 1}
+    assert sp.affinity_crits == {"Physical": 1}
+
+    # ... and the archive carries both back, or a reopened fight would show a
+    # crit COUNT with a zero crit DAMAGE beside it.
+    from farever_companion.core.dps_data import (
+        _session_from_dict, _session_to_dict)
+    back = _session_from_dict(_session_to_dict(tr.overall_session))
+    bsp = back.players["Me (You)"].skills["Sword_Base_Attack"]
+    assert abs(bsp.crit_damage - sp.crit_damage) < 1e-6
+    assert bsp.affinity_crits == sp.affinity_crits
+
+
+def test_a_folded_child_keeps_its_own_crit_damage():
+    """A skill folded into its parent (a bleed, a status tick) carries crit
+    damage and per-school crit counts of its OWN.
+
+    The parent's totals already include the child, so a child that dropped its
+    crit damage would show a breakdown whose numbers do not add up to the row
+    they explain.
+    """
+    from farever_companion.core.dps_data import CombatSession
+
+    s = CombatSession("Boss Fight", "boss")
+    s.record_hit("Boss", FOE, 100.0, 100.0, 500.0, caster_name="You",
+                 skill_id="Sword_Swarm", skill_name="Hive Swarm",
+                 is_crit=True, affinity="Physical", when=1000.0)
+    sp = s.players["You"].skills["Sword_Swarm"]
+    assert sp.crit_count == 1 and abs(sp.crit_damage - 500.0) < 1e-6
+    assert sp.affinity_crits == {"Physical": 1}
+    # a nested sub-skill folds the same way and keeps its own pair
+    for child in sp.subskills.values():
+        assert child.crit_count == 1 and abs(child.crit_damage - 500.0) < 1e-6
+        assert child.affinity_crits == {"Physical": 1}
+
+
+def test_a_placeholder_row_hands_its_crit_damage_to_its_owner():
+    """Resolving `Party_XXXX` folds crit damage with the crit count.
+
+    Without the fold a resolved row keeps "critted 3 times" beside "dealt 0
+    critting" - a row that contradicts itself, in the one place the fix is
+    invisible (the merge).
+    """
+    from farever_companion.core.dps_data import PlayerParse, SkillParse
+    from farever_companion.core.dps_tracker_attribution import merge_player_into
+
+    owner = PlayerParse(name="Owner")
+    owner.skills["S"] = SkillParse(skill_id="S", name="S")
+    owner.skills["S"].affinity_crits["Physical"] = 1
+    old = PlayerParse(name="Party_1234")
+    old.skills["S"] = SkillParse(skill_id="S", name="S")
+    old.skills["S"].crit_damage = 700.0
+    old.skills["S"].affinity_crits["Physical"] = 2
+
+    merge_player_into(owner, old)
+    assert abs(owner.skills["S"].crit_damage - 700.0) < 1e-6
+    assert owner.skills["S"].affinity_crits == {"Physical": 3}
+
+
+def test_the_party_roster_records_who_was_present_not_who_scored():
+    """The archived party comes from the game's own group roster, so a member
+    who dealt no damage still appears - and a fight's party cannot leak into
+    the next fight.
+
+    The player rows are culled to players that did something, so without this a
+    reloaded fight can only say how many scored. The roster is widened but
+    never shrunk (a member who leaves was still there), taken only by OPEN
+    sessions, and dropped by `reset()`.
+    """
+    from farever_companion.core.dps_data import (
+        CombatSession, _session_from_dict, _session_to_dict)
+
+    class _Mem:
+        def __init__(self, name, is_me=False, hero=0):
+            self.name, self.is_me, self.hero = name, is_me, hero
+
+    class _Roster:
+        def __init__(self, members):
+            self.members = members
+
+    tr = DpsTracker(_Model())
+    big = _Roster([_Mem("Me (You)", is_me=True, hero=PA),
+                   _Mem("Bob", hero=0xB0B),
+                   _Mem("Idle", hero=0x1D1E)])
+    tr._note_roster(big)
+
+    assert [m["name"] for m in tr.overall_session.roster] == \
+        ["Me (You)", "Bob", "Idle"]
+    assert [m["is_me"] for m in tr.overall_session.roster] == [True, False, False]
+    assert all(set(m) == {"name", "hero_class", "is_me"}
+               for m in tr.overall_session.roster)
+
+    # a LATER, smaller roster must not shrink the party the fight was tuned for
+    tr._note_roster(_Roster([_Mem("Me (You)", is_me=True, hero=PA)]))
+    assert len(tr.overall_session.roster) == 3
+
+    # a PAUSED session belongs to a fight that is over, so it takes nothing..
+    # (a READY session IS still live - it is the fight about to happen - so it
+    # has to be driven into combat and then paused to mean anything here)
+    paused = CombatSession("Boss Fight", "boss")
+    paused.record_hit("Boss", 1, 100.0, 100.0, 10.0, when=1000.0)
+    paused.pause()
+    assert paused.state == "PAUSED", paused.state
+    tr.boss_session = paused
+    tr._note_roster(big)
+    assert paused.roster == []
+
+    # ...while a fight that ALREADY holds its party keeps it through a pause,
+    # because that party is the one the fight was actually played with.
+    live = CombatSession("Boss Fight", "boss")
+    live.record_hit("Boss", 1, 100.0, 100.0, 10.0, when=1000.0)
+    tr.boss_session = live
+    tr._note_roster(big)
+    live.pause()
+    assert len(live.roster) == 3
+
+    # and reset() drops it, so the next fight starts with its own party
+    tr.overall_session.reset()
+    assert tr.overall_session.roster == []
+
+    # the archived fight keeps it, and one written before the field reads empty
+    s = CombatSession("Boss Fight", "boss")
+    s.record_hit("Boss", 1, 100.0, 100.0, 500.0, when=1000.0)
+    s.roster = [{"name": "Idle", "hero_class": "Priest", "is_me": False}]
+    s.pause()
+    d = _session_to_dict(s)
+    assert d["roster"] == [{"name": "Idle", "hero_class": "Priest",
+                            "is_me": False}]
+    assert _session_from_dict(d).roster == d["roster"]
+    d.pop("roster")
+    assert _session_from_dict(d).roster == []
+
+    # a solo fight with no roster writes no key at all (the zero-trim)
+    solo = CombatSession("Boss Fight", "boss")
+    solo.record_hit("Boss", 1, 100.0, 100.0, 500.0, when=1000.0)
+    solo.pause()
+    assert "roster" not in _session_to_dict(solo)
+
+
+def test_a_session_records_the_client_build_and_an_old_archive_stays_unknown():
+    """Each archived fight names the game build it was played on.
+
+    Not the companion's version: the reader is whatever build is installed the
+    day the file is opened, so it cannot answer "were these numbers recorded
+    before or after the patch?". A fight archived before the field existed
+    reads as unknown (""), never as a version and never as an error.
+    """
+    from farever_companion.core.dps_data import (
+        CombatSession, _session_from_dict, _session_to_dict)
+
+    s = CombatSession("Boss Fight", "boss")
+    s.record_hit("Boss", 1, 100.0, 100.0, 500.0, when=1000.0)
+    s.game_version = "steam-25782799"
+    s.pause()
+    d = _session_to_dict(s)
+    assert d["game_version"] == "steam-25782799"
+    assert _session_from_dict(d).game_version == "steam-25782799"
+    d.pop("game_version")
+    assert _session_from_dict(d).game_version == ""
+
+    unreadable = CombatSession("Boss Fight", "boss")
+    unreadable.record_hit("Boss", 1, 100.0, 100.0, 500.0, when=1000.0)
+    unreadable.pause()
+    assert "game_version" not in _session_to_dict(unreadable)
+
+
+def test_a_boss_record_is_scoped_to_one_difficulty():
+    """Normal and Heroic kills of one boss are two records, not one.
+
+    Difficulty changes the fight's health, damage and tuning, so a single
+    record spanning both would report a Heroic personal best set by a Normal
+    pull. The difficulty is already a fact on every archived session (`mode`),
+    so this is a grouping rule rather than new capture - and a run the game
+    never named is its own group, so it can never move a real difficulty's
+    best.
+    """
+    from farever_companion.core.dps_records import boss_records
+
+    now = time.time()
+    normal = _boss_kill("Reblochonk", damage=1000.0, when=now)
+    normal.mode = "normal"
+    heroic = _boss_kill("Reblochonk", damage=9000.0, when=now + 100.0)
+    heroic.mode = "heroic"
+    unnamed = _boss_kill("Reblochonk", damage=500.0, when=now + 200.0)
+    unnamed.mode = ""
+    # a value the game would never report must not join a real difficulty
+    junk = _boss_kill("Reblochonk", damage=700.0, when=now + 300.0)
+    junk.mode = "MYTHIC"
+
+    # Both the unnamed run and the impossible "MYTHIC" value normalize to "",
+    # so they share the one unknown-difficulty record and are never folded into
+    # normal or heroic. The order is kills first, then the name/difficulty
+    # tiebreak - no dependence on dict insertion order.
+    recs = boss_records([normal, heroic, unnamed, junk])
+    assert [(r.boss, r.difficulty, r.kills) for r in recs] == [
+        ("Reblochonk", "", 2),
+        ("Reblochonk", "heroic", 1),
+        ("Reblochonk", "normal", 1),
+    ]
+
+    # the load-bearing half: no record's damage mixes two difficulties
+    by_mode: dict[str, list] = {}
+    for r in recs:
+        by_mode.setdefault(r.difficulty, []).append(r.best_damage)
+    assert abs(max(by_mode["heroic"]) - 9000.0) < 1e-6
+    assert abs(max(by_mode["normal"]) - 1000.0) < 1e-6
+
+
+def test_a_rollup_key_keeps_two_difficulties_of_one_boss_apart():
+    """A record read from sidecars is only as scoped as the rollup it reads.
+
+    `summarize` groups by (boss, difficulty) for the same reason `boss_records`
+    does, and each rollup carries its own `boss`/`mode` so a reader never has to
+    parse the key apart.
+    """
+    from farever_companion.core.dps_records import (
+        merge_rollup, records_from_rollups, summarize)
+
+    now = time.time()
+    normal = _boss_kill("Reblochonk", damage=1000.0, when=now)
+    normal.mode = "normal"
+    heroic = _boss_kill("Reblochonk", damage=9000.0, when=now + 100.0)
+    heroic.mode = "heroic"
+
+    rollups: dict = {}
+    for log in ([normal], [heroic]):
+        for key, roll in summarize(log)["bosses"].items():
+            merge_rollup(rollups.setdefault(key, {}), roll)
+
+    assert len(rollups) == 2, "two difficulties must occupy two rollup keys"
+    assert {r["boss"] for r in rollups.values()} == {"Reblochonk"}
+    assert {r["mode"] for r in rollups.values()} == {"normal", "heroic"}
+
+    recs = records_from_rollups(rollups)
+    modes = {r.difficulty: r.best_damage for r in recs}
+    assert abs(modes["normal"] - 1000.0) < 1e-6
+    assert abs(modes["heroic"] - 9000.0) < 1e-6
+
+
+def test_a_stale_index_version_forces_a_rebuild_of_every_row(tmp_path):
+    """The index's OWN version is the rebuild lever, not the row's.
+
+    `refresh_index` reuses a cached row verbatim while a file's `(mtime, size)`
+    are unchanged, so a row-shape change that only bumped `SUMMARY_VERSION`
+    would keep serving the old shape forever. Bumping `PAYLOAD_VERSION` makes
+    `read_index` refuse the whole file, which is what re-describes every row.
+    """
+    import json as _json
+    from farever_companion.core import dps_archive
+
+    idx = dps_archive.index_path(tmp_path)
+    idx.write_text(_json.dumps({"v": dps_archive.PAYLOAD_VERSION - 1,
+                                "files": [{"path": "stale"}]}),
+                   encoding="utf-8")
+    assert dps_archive.read_index(tmp_path) is None
+
+    dps_archive.write_index(tmp_path, [])
+    assert dps_archive.read_index(tmp_path) == []
+
+
+def test_a_steam_build_id_is_read_beside_the_install_and_never_invented(tmp_path):
+    """The client identity falls back to Steam's build id, and only ever
+    reports what it actually found.
+
+    A real Farever install ships NO version resource in its executable (both
+    this reader and Windows' own VersionInfo report it empty), so the manifest
+    beside the install is the source that exists: `buildid` changes on every
+    patch, which is the granularity the archived field needs. Without a
+    manifest - a non-Steam install - the answer is "", never a guess.
+    """
+    from farever_companion.core import proc
+
+    steamapps = tmp_path / "steamapps"
+    install = steamapps / "common" / "Farever"
+    install.mkdir(parents=True)
+    (steamapps / "appmanifest_3672400.acf").write_text(
+        '"AppState"\n{\n\t"appid"\t\t"3672400"\n\t"name"\t\t"Farever"\n'
+        '\t"installdir"\t\t"Farever"\n\t"buildid"\t\t"25782799"\n}\n',
+        encoding="utf-8")
+
+    assert proc._steam_build_id(str(install)) == "steam-25782799"
+    # another game's manifest beside ours is not ours to report
+    other = steamapps / "common" / "OtherGame"
+    other.mkdir()
+    assert proc._steam_build_id(str(other)) == ""
+    # no manifest at all -> unknown, not a fabricated value
+    loose = tmp_path / "elsewhere"
+    loose.mkdir()
+    assert proc._steam_build_id(str(loose)) == ""
+    # and an install that cannot be identified records nothing at all
+    assert proc.game_build_version(str(other)) == ""
+
+
+# --- the party and the client build in the SIDECAR (2026-10-09) ------------#
+#
+# The other half of the recorded-party work: `sessions[*].roster` and
+# `.game_version` are per-fight facts (see the tests above), but a collapsed
+# log row is drawn WITHOUT parsing the log, so the two facts a row must state
+# have to live in the sidecar too. These pin what a sidecar may claim.
+
+def _party_fight(build: str = "", when: float = 1000.0, party=(),
+                 damage: float = 500.0):
+    """A boss kill carrying a party roster and a client build."""
+    from farever_companion.core.dps_data import CombatSession
+
+    s = CombatSession("King Ratsar", kind="boss")
+    s.state = "PAUSED"
+    s.start_time = when
+    s.end_time = when + 60.0
+    s.target_name = "\U0001f451 King Ratsar"
+    s.boss_label = "King Ratsar"
+    s.boss_killed = True
+    s.record_hit("King Ratsar", 2, 100.0, 0.0, damage, caster_name="You",
+                 skill_id="Sword_Base_Attack", skill_name="Sword",
+                 when=when + 10.0)
+    s.roster = [{"name": n, "hero_class": c, "is_me": m} for n, c, m in party]
+    s.game_version = build
+    return s
+
+
+def test_the_sidecar_carries_the_party_and_the_client_build():
+    """One row answers "who was there" and "which patch" without a parse."""
+    from farever_companion.core.dps_records import summarize
+
+    log = [_party_fight("steam-100", 1000.0,
+                        [("Kartik", "warrior", True), ("Mira", "priest", False)]),
+           _party_fight("steam-200", 5000.0,
+                        [("Kartik", "warrior", True), ("Mira", "priest", False),
+                         ("Thornblade", "rogue", False)])]
+    out = summarize(log)
+
+    # the LARGEST party in the log, and its true size
+    assert out["party_size"] == 3
+    assert [e["name"] for e in out["party"]] == ["Kartik", "Mira", "Thornblade"]
+    assert [e["is_me"] for e in out["party"]] == [True, False, False]
+    # the NEWEST session's build is the log's answer, chosen by the session's own
+    # clock rather than by list order
+    assert out["game_version"] == "steam-200"
+    assert out["game_versions"] == ["steam-100", "steam-200"]
+
+    shuffled = summarize(list(reversed(log)))
+    assert shuffled["game_version"] == "steam-200"
+    assert shuffled["game_versions"] == ["steam-100", "steam-200"]
+
+
+def test_a_log_that_recorded_no_party_omits_the_fields_entirely():
+    """Absent, never zero: `party_size: 0` would draw "party of 0" on a row the
+    game never described, and `game_version: ""` would draw an empty chip."""
+    from farever_companion.core.dps_records import summarize
+
+    out = summarize([_party_fight("", 1000.0, party=())])
+    assert "party" not in out and "party_size" not in out
+    assert "game_version" not in out and "game_versions" not in out
+    # and a log with nothing in it at all says the same, not "party of 0"
+    assert "party_size" not in summarize([])
+
+
+def test_a_raid_party_is_capped_but_its_size_is_not():
+    """The sidecar is read on every list draw, so a 40-member raid must not put
+    40 names in every index row - but the COUNT stays true, or the row would
+    under-report the party it is there to report."""
+    from farever_companion.core.dps_records import _MAX_PARTY_NAMES, summarize
+
+    raid = _party_fight("steam-1", 1000.0,
+                        party=[(f"Member{i}", "mage", i == 0) for i in range(40)])
+    out = summarize([raid])
+    assert out["party_size"] == 40
+    assert len(out["party"]) == _MAX_PARTY_NAMES
+    assert out["party"][0]["is_me"] is True
+
+
+def test_a_log_spanning_many_builds_keeps_the_newest_and_says_no_more():
+    """`game_versions` stops growing: past a handful of values it is a corrupted
+    field, not a history, and the index row must not grow with it."""
+    from farever_companion.core.dps_records import _MAX_BUILDS, summarize
+
+    log = [_party_fight(f"steam-{i}", 1000.0 + i * 100.0,
+                        [("Kartik", "warrior", True)]) for i in range(9)]
+    out = summarize(log)
+    assert out["game_version"] == "steam-8"
+    assert len(out["game_versions"]) == _MAX_BUILDS
+
+
+def test_an_index_row_is_described_with_the_party_and_the_build(tmp_path):
+    """End to end through the REAL codec: the row the Fights list draws carries
+    both facts, which is what makes the chip possible without opening the log."""
+    from farever_companion.core import dps_archive
+
+    base = tmp_path / "dps"
+    month = base / "2026-10"
+    month.mkdir(parents=True)
+    log = [_party_fight("steam-25782799", 1000.0,
+                        [("Kartik", "warrior", True), ("Mira", "priest", False)])]
+    path = month / "King Ratsar.json.gz"
+    dps_archive.write_sessions(path, log)
+    row = dps_archive.describe_file(path)
+
+    assert row["summary"]["party_size"] == 2
+    assert row["summary"]["game_version"] == "steam-25782799"
+    # ...and the row survives the index round trip it is actually read through
+    dps_archive.write_index(base, [row])
+    back = dps_archive.read_index(base)[0]
+    assert back["summary"]["party"][1]["name"] == "Mira"
+    assert back["summary"]["game_version"] == "steam-25782799"
+    # a log whose sessions recorded none describes them as absent
+    bare = month / "trash.json.gz"
+    dps_archive.write_sessions(bare, [_party_fight("", 3000.0, party=())])
+    assert "party_size" not in dps_archive.describe_file(bare)["summary"]

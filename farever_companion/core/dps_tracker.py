@@ -455,17 +455,19 @@ class DpsTracker(DpsTrackerDummy, DpsTrackerTick):
         # Boss must be checked BEFORE dummy: stale dummy_session.group_damage
         # from a previous fight would shadow the live boss otherwise.
         if self.in_boss_fight:
-            # The fight is live: show the boss board — unless every hit so
-            # far landed on adds. A latched boss flag with an empty boss
-            # session (trash wave before the pull) must not blank BOTH
-            # surfaces; live 2026-09-19 dungeon run archived 6341 damage
-            # under Boss Adds while the meter pinned the empty boss view
-            # and Top DPS + the Combat page showed nothing until a reset.
+            # The board follows DAMAGE, not the flag. A latched boss flag
+            # with an empty boss session (trash wave before the pull, or a
+            # hard/heroic champion mob the engine flagged as a boss) must
+            # not blank the meter: live 2026-09-19 a dungeon wave archived
+            # 6341 damage under Boss Adds while auto pinned the empty boss
+            # view and Top DPS + the Combat page showed nothing until a
+            # reset. Boss damage lands -> the boss board wins; adds only ->
+            # the adds board; neither -> whatever is actually running
+            # (the trash run stays up instead of an empty boss board).
             if self.boss_session.group_damage > 0:
                 return self.boss_session
             if self.boss_adds_session.group_damage > 0:
                 return self.boss_adds_session
-            return self.boss_session
         if self.dummy_owns_board():
             return self.dummy_session
         if self.boss_session.group_damage > 0:
@@ -1173,6 +1175,56 @@ class DpsTracker(DpsTrackerDummy, DpsTrackerTick):
         return self._foe_names.get(addr)
 
     # --- group roster (st.Group) name seeding ----------------------------#
+    def _live_sessions(self) -> tuple:
+        """The fight sessions that may still take a per-fight fact.
+
+        A PAUSED session's fight is over as far as capture is concerned - its
+        next hit opens a new pull - so it is deliberately absent: only an open
+        fight may be described by the party standing here now.
+        """
+        slots = (self.overall_session, self.trash_session, self.boss_session,
+                 getattr(self, "boss_adds_session", None), self.dummy_session)
+        return tuple(s for s in slots
+                     if s is not None and getattr(s, "state", "") != "PAUSED")
+
+    def _note_roster(self, roster) -> None:
+        """Record the party on every open fight session, widening only.
+
+        The largest roster a fight has seen is the honest one: a member who
+        leaves mid-fight was still part of it, and a member who joins late must
+        not shrink the party the earlier pulls were tuned for. Only OPEN
+        sessions take it (see `_live_sessions`) - a paused session's fight is
+        over, and must not be re-described by the party standing here now.
+        """
+        snapshot = self._roster_snapshot(roster)
+        if not snapshot:
+            return
+        for sess in self._live_sessions():
+            if len(snapshot) > len(sess.roster):
+                sess.roster = [dict(m) for m in snapshot]
+
+    def _roster_snapshot(self, roster) -> list[dict]:
+        """The party as archived facts: name, class and the local flag each.
+
+        Taken from the game's own `st.Group` roster rather than the meter's
+        rows, because the point is to record who was PRESENT - including a
+        member who never dealt damage and so has no row to be read off. The
+        class is best-effort (the roster member carries no class field; the
+        tracker learns classes by hero/player address), so an unresolved member
+        is stored with an empty class rather than a guessed one.
+        """
+        out: list[dict] = []
+        for mem in getattr(roster, "members", None) or []:
+            name = (getattr(mem, "name", "") or "").strip()
+            if not name:
+                continue
+            classes = getattr(self, "_hero_classes", None) or {}
+            cls = (classes.get(getattr(mem, "hero", 0) or 0)
+                   or classes.get(getattr(mem, "player", 0) or 0) or "")
+            out.append({"name": name, "hero_class": cls,
+                        "is_me": bool(getattr(mem, "is_me", False))})
+        return out
+
     def _seed_group_roster(self, pa: int) -> None:
         """Pre-seed party names from the game's st.Group roster; Party_XXXX rows fold into real names."""
         m = self.model
@@ -1185,6 +1237,10 @@ class DpsTracker(DpsTrackerDummy, DpsTrackerTick):
         # Cache for the display path (group line + solo check): the UI never
         # polls the game's group object itself.
         self.last_roster = roster
+
+        # The archived party (see `_note_roster`): a fight records who was
+        # present even when nobody but you dealt any damage.
+        self._note_roster(roster)
 
         # Roster-change log: one line per join/leave/leader/solo transition.
         key = _roster_change_key(roster)

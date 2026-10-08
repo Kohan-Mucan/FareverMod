@@ -1,7 +1,10 @@
-"""In-app self-updater UI workflow, download worker, and relaunch coordinator."""
+"""Update-notification pill and its background check worker.
+
+The app only NOTIFIES: the pill opens the release page in the browser, where the
+player downloads. Nothing here touches the running exe.
+"""
 from __future__ import annotations
 
-from PySide6 import QtWidgets
 from ..core import updater
 from .workers import CallWorker, retire
 from .. import __version__
@@ -22,7 +25,7 @@ def update_pill_text(info, suffix: str = "") -> str:
 
 
 class UpdaterMixin:
-    """Mixin providing self-update notification pill and interactive install dialog."""
+    """Mixin providing the update-notification pill and its background check."""
 
     def _start_update_check(self):
         """Ask the release oracle once, on a worker thread; a newer release
@@ -76,83 +79,15 @@ class UpdaterMixin:
         self._update_btn.setVisible(True)
         self.log(f"Update available: v{__version__} → "
                  f"v{updater.clean_version(info.version)}. "
-                 "Click the sidebar button to install.")
+                 "Click the sidebar button to open the release page.")
 
     def _on_update_clicked(self):
+        """Open the release page in the browser: the app notifies, the player
+        downloads. `page_url`, never `info.html_url` raw - the payload does not
+        get to choose a `javascript:`/`file:` target for a button we drew.
+        """
         info = getattr(self, "_update_info", None)
-        if info is None or getattr(self, "_updating", False):
+        if info is None:
             return
-        if not updater.is_frozen():
-            import webbrowser
-            # `page_url`, never `info.html_url` raw: the payload does not get to
-            # choose a `javascript:` or `file:` target for a button we drew.
-            webbrowser.open(updater.page_url(info.html_url))
-            return
-        notes = (info.notes or "").strip()
-        if len(notes) > 600:
-            notes = notes[:600] + "…"
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("Update Farever Pal")
-        box.setIcon(QtWidgets.QMessageBox.Question)
-        box.setText(f"Update from v{__version__} to v{info.version}?\n\n"
-                    "The app will download the new version, restart, and reconnect automatically.")
-        if notes:
-            box.setInformativeText(notes)
-        box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        box.setDefaultButton(QtWidgets.QMessageBox.Yes)
-        if box.exec() != QtWidgets.QMessageBox.Yes:
-            return
-        self._updating = True
-        self._update_btn.setEnabled(False)
-        self._update_btn.setText("Downloading…  0%")
-        self.log(f"Downloading v{info.version}…")
-
-        def _download(w):
-            cb = lambda d, t: w.progress.emit(int(d * 100 / t)) if t else None
-            try:
-                return updater.download_and_stage(info, cb)
-            except Exception as e:
-                return e
-
-        # The previous download worker is retired before the slot is
-        # reassigned: a retry after a failed download would otherwise drop the
-        # last reference to a QThread whose thread may still be winding down
-        # (see workers.retire).
-        retire(self._update_dl_worker)
-        self._update_dl_worker = CallWorker(_download)
-        self._update_dl_worker.progress.connect(self._on_update_progress)
-        self._update_dl_worker.done.connect(lambda _t, r: self._on_update_downloaded(r))
-        self._update_dl_worker.start()
-
-    def _on_update_progress(self, pct: int):
-        self._update_btn.setText(f"Downloading…  {pct}%")
-
-    def _on_update_downloaded(self, result):
-        if isinstance(result, Exception):
-            self._updating = False
-            self._update_btn.setEnabled(True)
-            retry = update_pill_text(self._update_info, " (retry)")
-            if retry:
-                self._update_btn.setText(retry)
-            else:
-                # No version to name: the pill must not sit there reading
-                # something else ("Downloading..." with nothing downloading).
-                self._update_btn.setVisible(False)
-            self.log(f"Update failed: {result}")
-            QtWidgets.QMessageBox.warning(
-                self, "Update failed",
-                f"Couldn't install the update:\n{result}\n\n"
-                "You can retry, or download it from the website.")
-            return
-
-        self.log(f"Installing v{self._update_info.version} and restarting…")
-        try:
-            self.detach()
-            updater.apply_and_relaunch(result)
-        except Exception as e:
-            self._updating = False
-            self._update_btn.setEnabled(True)
-            self.log(f"Update install failed: {e}")
-            QtWidgets.QMessageBox.warning(self, "Update failed", str(e))
-            return
-        QtWidgets.QApplication.quit()
+        import webbrowser
+        webbrowser.open(updater.page_url(info.html_url))

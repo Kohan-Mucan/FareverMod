@@ -99,7 +99,7 @@ class PowerKeepAlive:
                 Flags=_POWER_REQUEST_CONTEXT_FLAGS_SIMPLE,
                 Reason=ctypes.cast(
                     ctypes.create_unicode_buffer(
-                        "FareverPal: DPS capture drains on timers; game attached"),
+                        "FareverMod: DPS capture drains on timers; game attached"),
                     wintypes.LPVOID),
             )
             handle = k32.PowerCreateRequest(ctypes.byref(ctx))

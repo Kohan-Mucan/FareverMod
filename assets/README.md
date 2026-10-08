@@ -2,7 +2,7 @@
 
 App-owned assets (not game data). Resolved at runtime by
 `farever_companion.paths.assets_dir()` — the dev tree (`companion/assets/`) or,
-in a packaged build, `_MEIPASS/assets` (bundled by `FareverPal.spec`).
+in a packaged build, `_MEIPASS/assets` (bundled by `FareverMod.spec`).
 
 ## `fonts/`
 UI typography, loaded at startup via `QFontDatabase.addApplicationFont`

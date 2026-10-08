@@ -259,6 +259,125 @@ def _show_dps_tab(p, width: int = 1600):
     return win, tab
 
 
+def _columns(tab, anchor):
+    """The bottom grid: the flow, its cards in ITEM order, and by COLUMN.
+
+    Found by the card it holds rather than by build order, so a card added to the
+    grid cannot silently make this measure the wrong flow. Item order matters for
+    the row-grid comparison below: the row grid fills row-major over the flow's
+    own items, so chunking some other order would measure a grid that never
+    existed.
+    """
+    for flow, cards in _flow_rows(tab):
+        if anchor not in cards:
+            continue
+        cols: dict[int, list] = {}
+        for c in cards:
+            cols.setdefault(c.geometry().x(), []).append(c)
+        for members in cols.values():
+            members.sort(key=lambda c: c.geometry().y())
+        return flow, cards, cols
+    raise AssertionError("the bottom grid holding the diagnostics card is gone")
+
+
+def _grid_span(cards) -> int:
+    """The grid's own height: top of the highest card to the bottom of the
+    lowest, in the flow's coordinates (never the tab's)."""
+    top = min(c.geometry().y() for c in cards)
+    return max(c.geometry().y() + c.geometry().height() for c in cards) - top
+
+
+def _row_grid_span(cards, cols: int, spacing: int) -> int:
+    """The height these same cards take as top-aligned ROWS, from their own
+    measurements — the arithmetic the balanced grid has to beat, computed here
+    instead of asked of the layout."""
+    heights = [c.geometry().height() for c in cards]
+    rows = [heights[i:i + cols] for i in range(0, len(heights), cols)]
+    return sum(max(r) for r in rows) + spacing * (len(rows) - 1)
+
+
+def test_the_bottom_grid_stacks_balanced_columns_not_stair_step_rows(qapp):
+    """The DPS bottom grid packs the shorter column, so no card reserves a band
+    it does not fill.
+
+    The row grid top-aligns each card at its own height inside a row as tall as
+    its TALLEST member, so the Test Dummy card (449px, against Top DPS at 292px)
+    left a hole under its neighbour in every row on the tab. Re-pairing cannot
+    fix that at this spread — no card is within 160px of the dummy one — so the
+    grid packs columns by height instead. This pins all three properties: each
+    card keeps its OWN height, each column is stacked contiguously (no reserved
+    band between its cards), and the grid really is shorter than the same cards
+    laid out as rows.
+    """
+    p = Panel()
+    win, tab = _show_dps_tab(p)
+    try:
+        flow, cards, cols = _columns(tab, p._dps_diag_card)
+        assert len(cols) >= 2, "the bottom grid collapsed to one column"
+        spacing = flow.spacing()
+        for x, members in cols.items():
+            # every card keeps its OWN height — nothing is stretched to equalise
+            for c in members:
+                g = c.geometry()
+                assert g.height() == max(c.heightForWidth(g.width()),
+                                         c.minimumSizeHint().height()), \
+                    f"{x}: a card was stretched to a band, not its own height"
+            # contiguous stacking: each card starts where the one above ended
+            for above, below in zip(members, members[1:]):
+                ga, gb = above.geometry(), below.geometry()
+                assert gb.y() == ga.y() + ga.height() + spacing, \
+                    f"column x={x} reserves a band between cards"
+
+        grid_h = _grid_span(cards)
+        row_h = _row_grid_span(cards, len(cols), spacing)
+        assert grid_h < row_h, \
+            (f"balanced columns ({grid_h}px) are not shorter than the row grid "
+             f"({row_h}px) for the same cards")
+    finally:
+        win.hide()
+        win.deleteLater()
+        _settle()
+
+
+def test_balancing_is_opt_in_and_leaves_a_single_column_alone(qapp):
+    """Only the grid it was asked for balances, and a one-column grid is
+    unchanged either way (there is nothing to balance against)."""
+    banded = StretchFlow()
+    banded.setContentsMargins(0, 0, 0, 0)
+    banded.setSpacing(12)
+    banded.set_min_share(535)
+    assert not getattr(banded, "_balance", False), \
+        "a plain min_share grid must stay in rows"
+
+    # one column: cards stack full width, each at its own height, both modes
+    for balanced in (False, True):
+        host = QtWidgets.QWidget()
+        flow = StretchFlow(host)
+        flow.setContentsMargins(0, 0, 0, 0)
+        flow.setSpacing(12)
+        flow.set_min_share(535)
+        flow.set_balance_columns(balanced)
+        cards = []
+        for _ in range(3):
+            c = QtWidgets.QFrame()
+            c.setFixedHeight(40)
+            flow.addWidget(c)
+            cards.append(c)
+        host.resize(500, 400)
+        host.show()
+        _settle()
+        try:
+            geos = [c.geometry() for c in cards]
+            assert [g.x() for g in geos] == [0, 0, 0], (balanced,
+                                                        [g.x() for g in geos])
+            assert [g.y() for g in geos] == [0, 52, 104], (balanced, geos)
+            assert {g.width() for g in geos} == {500}, (balanced, geos)
+        finally:
+            host.hide()
+            host.deleteLater()
+            _settle()
+
+
 def test_flow_card_labels_wrap_unless_they_are_short_literals(qapp):
     """No label in a flow row may hold long text unwrapped.
 
@@ -920,7 +1039,7 @@ def test_options_2_and_3_are_locked_until_option1_proxy_is_removed(mode):
 
 def test_option1_active_requires_proxy_dll_installed():
     """Selecting Option 1 only reads '✓ ACTIVE MODE' once a hash-verified
-    FareverPal proxy DLL is actually in the game folder (or live in the
+    FareverMod proxy DLL is actually in the game folder (or live in the
     running game). With none installed the select button says
     '✗ No DLL Installed' instead of claiming to be active — and a 3rd-party
     DLL that merely shares the proxy filename never counts."""
@@ -929,7 +1048,7 @@ def test_option1_active_requires_proxy_dll_installed():
     p.s.dps_mode = "proxy"
     btn = p._dps_mode_select_btns["proxy"]
 
-    # No FareverPal DLL anywhere -> selected but NOT active.
+    # No FareverMod DLL anywhere -> selected but NOT active.
     p._dps_diag_binfo = {"proxy_in_game_dir": False, "detected": False,
                          "option": 0, "dll_name": "", "game_dir": ""}
     p._update_dps_card_highlights()
@@ -942,7 +1061,7 @@ def test_option1_active_requires_proxy_dll_installed():
     p._update_dps_card_highlights()
     assert btn.text() == "✗ No DLL Installed"
 
-    # FareverPal proxy verified in the game folder -> active.
+    # FareverMod proxy verified in the game folder -> active.
     p._dps_diag_binfo = {"proxy_in_game_dir": True, "detected": False,
                          "option": 0, "dll_name": "version.dll",
                          "game_dir": ""}
@@ -1075,7 +1194,7 @@ def test_proxy_scan_detects_new_release_on_the_same_game_build(
 def test_option1_button_tracks_real_dll_in_game_folder(tmp_path):
     """A Live Diagnostics refresh drives the Option 1 button from the real
     hash-verified DLL check: '✗ No DLL Installed' on an empty game folder,
-    '✓ ACTIVE MODE' once a FareverPal reference DLL is copied in."""
+    '✓ ACTIVE MODE' once a FareverMod reference DLL is copied in."""
     import shutil
     # version.dll stopped shipping (2026-09-24), so the reference binary this
     # test needs is dinput8.dll now - any shipped proxy proves the same thing

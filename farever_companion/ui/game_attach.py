@@ -45,7 +45,7 @@ def dmg_hints_from(settings: Settings) -> tuple[str, str]:
 def _attach_capture_mode(requested: str, bridge: dict) -> tuple[str, bool]:
     """Keep DLL capture modes mutually exclusive at process attach.
 
-    Option 1 is a file-backed proxy: if its FareverPal DLL remains in the game
+    Option 1 is a file-backed proxy: if its FareverMod DLL remains in the game
     folder, Farever can load it even when settings request Option 2/3. Prefer
     the already-present proxy until the user explicitly removes it; never start
     an injector alongside it or label the passive scanner as DLL-free while a
@@ -108,9 +108,9 @@ def _hook_launch_candidates() -> list:
     import sys
     dev = [
         Path(__file__).resolve().parents[2] / "dps_bridge" / "farever_dps.exe",
-        Path("D:/1MobileApp/vs/FareverPal-SC/GameFiles/Farever/hooks/hook/farever_dps/farever_dps.exe"),
-        Path("D:/1MobileApp/vs/FareverPal-SC/GameFiles/Farever/hooks/hook/farever_dps.exe"),
-        Path("D:/1MobileApp/vs/FareverPal-SC/GameFiles/Farever/hooks/farever_dps.exe"),
+        Path("D:/1MobileApp/vs/FareverMod-SC/GameFiles/Farever/hooks/hook/farever_dps/farever_dps.exe"),
+        Path("D:/1MobileApp/vs/FareverMod-SC/GameFiles/Farever/hooks/hook/farever_dps.exe"),
+        Path("D:/1MobileApp/vs/FareverMod-SC/GameFiles/Farever/hooks/farever_dps.exe"),
         Path(__file__).resolve().parents[2] / "hook" / "farever_dps.exe",
         Path(__file__).resolve().parents[2] / "dist" / "dps_bridge" / "farever_dps.exe",
     ]
@@ -524,7 +524,14 @@ class GameAttachmentController(InjectWatchdogMixin, QtCore.QObject):
         if dps_mode == "proxy" or bridge.get("proxy_in_game_dir"):
             sync_bridge_dev_flag(bridge.get("game_dir", ""))
         else:
-            remove_dev_flag(bridge.get("game_dir", "") or "")
+            # farever_dps.dll loads from dps_bridge and never reads the game
+            # dir, so a game-folder flag is inert - but it is DELETED rather
+            # than ignored, and `remove_dev_flag` is unconditional: that used
+            # to wipe a flag the Settings Dev tab had just written when the
+            # toggle was pointed at the game folder. `sync` instead clears only
+            # a STALE one (an unreadable target), so an asked-for flag survives
+            # and an inert leftover still gets cleaned up.
+            sync_bridge_dev_flag(bridge.get("game_dir", "") or "")
         if bridge.get("detected"):
             self.log.emit(f"Combat Bridge: {bridge['status_summary']}")
         else:

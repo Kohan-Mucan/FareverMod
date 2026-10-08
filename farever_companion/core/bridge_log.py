@@ -141,16 +141,75 @@ def remove_dev_flag(folder: str) -> bool:
     return False
 
 
+#: Names the bridge is BUILT as, so a flag written for one host cannot be
+#: read as another's. See `dev_flag_hosts`.
+_PROXY_DLL_NAMES = ("dinput8.dll", "userenv.dll")
+
+
+def dev_flag_hosts() -> dict[str, str]:
+    """Which folder each live capture mode's binaries load from.
+
+    The dev flag is read from beside the BINARY, so the folder depends on the
+    mode and the two are not interchangeable:
+
+    * **injector** (``farever_dps.dll``) runs out of ``dps_bridge\\`` - the
+      injector exe is launched with ``cwd`` set there, and that DLL never reads
+      the game folder;
+    * **proxy** (``dinput8`` / ``userenv``) is COPIED into the game folder and
+      loaded from there, so it looks beside itself.
+
+    Getting this wrong is not cosmetic: a flag written into the folder the
+    running binary does not use is a file nothing ever opens, which is how the
+    Settings toggle looked like it worked while doing nothing. Only the
+    injector folder is resolved here - the proxy's is the GAME folder, which
+    every caller already holds and passes in; guessing at it from this module
+    would be a second, silently-different answer to the same question.
+    """
+    from .proc import get_bridge_dir
+    hosts: dict[str, str] = {}
+    try:
+        bridge = get_bridge_dir()
+        if bridge and os.path.isdir(bridge):
+            hosts["injector"] = bridge
+    except Exception:
+        pass
+    return hosts
+
+
 def sync_dev_flag(folder: str) -> str:
     """Make `folder` match the current run: flag in dev mode, gone otherwise.
 
     The one call every install / launch path uses, so a normal user's game
     folder can never keep a flag from an earlier developer run.
+
+    "Matching the run" has two readers now, and this is where they collide.
+    Outside a ``run-log.bat`` session the flag is still a legitimate thing to
+    find: the Settings Dev tab writes it deliberately, and `run-log.bat` is not
+    the only way to be a developer. Deleting it here - which is what this used
+    to do unconditionally outside dev mode - made that switch a lie, because
+    turning it on and then attaching (or installing a proxy) silently turned it
+    back off. So a flag that is present AND names a writable path is treated as
+    asked-for and left alone; only a STALE one is cleared.
+
+    The staleness test is what still guarantees a normal user never ends up
+    logging: a leftover flag from an earlier session points into a dev folder
+    that may not exist, so the target is checked, not just the file's presence.
     """
     if not folder:
         return ""
     if dev_mode():
         return write_dev_flag(folder)
+    flag = dev_flag_path(folder)
+    if os.path.isfile(flag):
+        try:
+            with open(flag, encoding="utf-8") as f:
+                target = f.readline().strip()
+        except OSError:
+            target = ""
+        if target:
+            folder_of_target = os.path.dirname(os.path.abspath(target))
+            if os.path.isdir(folder_of_target):
+                return flag      # asked-for: the Dev tab (or a dev script) wrote it
     remove_dev_flag(folder)
     return ""
 

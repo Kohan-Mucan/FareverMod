@@ -268,7 +268,18 @@ def _is_mount_or_glider(item_id: str) -> bool:
     the same sheet both HUDs render by."""
     if not item_id:
         return False
-    return item_id.startswith("Mount_") or item_id.startswith("Glider_")
+    # TWO id shapes carry mount/glider art: the ITEM family with the
+    # underscore (`Mount_Wolf_01`, `Glider_Bat_Demon`) and the UNIT family the
+    # game spawns in the world, which has none (`MountWolf_01`,
+    # `MountGoat_03`). Requiring the underscore sent every unit-family mount to
+    # the gear sheet, which has no sprite for it, so the row drew a bare
+    # placeholder square. The camel shape marks that family just as well.
+    for prefix in ("Mount", "Glider"):
+        if item_id.startswith(prefix):
+            rest = item_id[len(prefix):]
+            if rest[:1] == "_" or rest[:1].isupper():
+                return True
+    return False
 
 
 def map_icon_sheet(item_id: str) -> str:
@@ -276,12 +287,23 @@ def map_icon_sheet(item_id: str) -> str:
 
     Companions use the `collection` sheet already; mounts and gliders share
     that sheet now. Everything else keeps its existing sheet lookup.
+
+    VERIFIED, not just intended: the chosen sheet must actually hold art for
+    the id. The prefix test alone can miss a shape (`MountWolf_01`), and a row
+    whose sheet has no sprite draws a bare placeholder box — so a miss falls
+    through to whichever sheet does hold the art. Same three attempts
+    `item_tile` walks, in one place, so every caller keeps agreeing.
     """
-    if _is_mount_or_glider(item_id):
-        return "collection"
-    if units.is_companion(item_id):
-        return "collection"
-    return "item"
+    if _is_mount_or_glider(item_id) or units.is_companion(item_id):
+        chosen = "collection"
+    else:
+        chosen = "item"
+    if has_icon(chosen, item_id):
+        return chosen
+    for alt in ("collection", "item", "units"):
+        if alt != chosen and has_icon(alt, item_id):
+            return alt
+    return chosen
 
 
 def atlas_sprite_resolvable(sheet: str, id_: str) -> bool:
@@ -307,6 +329,8 @@ def trim_caches() -> None:
     pixmap.cache_clear()
     pixmap_cropped.cache_clear()
     tile.cache_clear()
+    weapon_rungs.cache_clear()
+    rung_mark.cache_clear()
     tile_marker.cache_clear()
     outlined.cache_clear()
     marker.cache_clear()
@@ -326,7 +350,8 @@ def trim_caches() -> None:
 
 
 def item_tile(item_id: str, item_name: str, size: int, accent: str,
-              *, strong: bool = False) -> "QtGui.QPixmap":
+              *, strong: bool = False,
+              rungs: tuple[str, ...] | None = None) -> "QtGui.QPixmap":
     """Smart item icon resolver: tries ID first, then display Name (since some
     assets use spaces), then falls back to the 'unit' sheet for scanned
     boss gear. Returns the standard tinted tile.
@@ -339,20 +364,21 @@ def item_tile(item_id: str, item_name: str, size: int, accent: str,
     # 1. Try 'item' sheet with the technical ID
     if has_icon("item", item_id):
         return tile("item", item_id, size, accent, bg_alpha=bg_a,
-                    border_alpha=bd_a)
+                    border_alpha=bd_a, rungs=rungs)
 
     # 2. Try 'item' sheet with the display Name (handles names with spaces)
     if item_name and has_icon("item", item_name):
         return tile("item", item_name, size, accent, bg_alpha=bg_a,
-                    border_alpha=bd_a)
+                    border_alpha=bd_a, rungs=rungs)
 
     # 3. Fallback to 'unit' sheet (scanned mob/boss gear)
     if has_icon("unit", item_id):
         return tile("unit", item_id, size, accent, bg_alpha=bg_a,
-                    border_alpha=bd_a)
+                    border_alpha=bd_a, rungs=rungs)
 
     # 4. Final placeholder tile (the tinted square with ID if possible)
-    return tile("item", item_id, size, accent, bg_alpha=bg_a, border_alpha=bd_a)
+    return tile("item", item_id, size, accent, bg_alpha=bg_a,
+                border_alpha=bd_a, rungs=rungs)
 
 
 def item_sprite_resolvable(item_id: str, item_name: str = "") -> bool:
@@ -375,8 +401,83 @@ def item_sprite_resolvable(item_id: str, item_name: str = "") -> bool:
 
 
 @lru_cache(maxsize=1024)
+def weapon_rungs(item_id: str) -> tuple[str, ...]:
+    """The rungs that earn a weapon's tile its rung mark: the tiers the game can
+    actually hand this id out at, or () when it is not a weapon, or a weapon
+    that only ever comes out at one rung.
+
+    A weapon's tier is decided when it is GRANTED rather than by which row you
+    read, so the rung is not on the row: a weapon that can only ever come out
+    at one rung (a Rare-only vendor piece) keeps the single-colour tile it
+    has always had, while one the game can hand out higher — the Hero Weapon
+    Cache's `*_Craft` pool, or any boss-dropped weapon via the sheet's
+    `generationChance` roll — wears the mark (see `items.obtainable_tiers`).
+    Nothing here is a hand list: a patch that closes a roll band moves the
+    mark with it.
+
+    Reads the data layer lazily (`data/` stays importable headless) and never
+    raises — a missing row is no mark, never a broken icon.
+    """
+    if not item_id:
+        return ()
+    try:
+        from . import items as idata
+        row = idata.item(item_id) or {}
+        if idata.category(row.get("type")) != "Weapons":
+            return ()
+        rungs = tuple(idata.obtainable_tiers(item_id))
+    except Exception:
+        return ()
+    return rungs if len(rungs) > 1 else ()
+
+
+#: The rung frame's width on a tile: the single-colour 1px border is too
+#: fine to split, so a marked tile wears a 2px frame instead.
+_RUNG_FRAME_PX = 2
+
+
+@lru_cache(maxsize=256)
+def rung_mark(size: int, rungs: tuple[str, ...]):
+    """One frame segment per rung, each in that rung's full-strength rarity
+    colour — the tri-colour frame a multi-rung weapon's tile wears.
+
+    Every edge carries every rung (left to right on the horizontals, top to
+    bottom on the verticals), so the reading is the same whichever edge the
+    eye lands on. FLAT fills only, never a gradient: at tile size the flat
+    and gradient readings look the same, so the cheaper paint wins. `tile`
+    lays this OVER the tile (the interior is transparent and the sprite sits
+    padded inside the frame), so the art keeps its own colours and the edge
+    states the tiers — the same segmented-frame language as the weapon chips'
+    frames, at tile scale. A single rung is not a reading: that tile keeps
+    its plain single-colour border.
+    """
+    QtGui, QtCore = _qt()
+    from ..ui import theme
+    pm = QtGui.QPixmap(size, size)
+    pm.fill(QtGui.QColor(0, 0, 0, 0))
+    p = QtGui.QPainter(pm)
+    p.setPen(QtCore.Qt.NoPen)
+    n = len(rungs)
+    cols = [QtGui.QColor(theme.rarity_color(r)) for r in rungs]
+    for c in cols:
+        c.setAlpha(255)
+    bw = _RUNG_FRAME_PX
+    for i, c in enumerate(cols):
+        p.setBrush(c)
+        x0, x1 = i * size / n, (i + 1) * size / n
+        y0, y1 = x0, x1
+        p.drawRect(QtCore.QRectF(x0, 0, x1 - x0, bw))
+        p.drawRect(QtCore.QRectF(x0, size - bw, x1 - x0, bw))
+        p.drawRect(QtCore.QRectF(0, y0, bw, y1 - y0))
+        p.drawRect(QtCore.QRectF(size - bw, y0, bw, y1 - y0))
+    p.end()
+    return pm
+
+
+@lru_cache(maxsize=1024)
 def tile(sheet: str | None, id_: str | None, size: int, accent: str,
-         trim: bool = False, bg_alpha: int = 46, border_alpha: int = 140):
+         trim: bool = False, bg_alpha: int = 46, border_alpha: int = 140,
+         rungs: tuple[str, ...] | None = None):
     """Game icon on a rounded, accent-tinted square, the standard row leading
     element (Loot table + both HUDs). `accent` is a hex color (rarity / faction
     / gold / cyan). Background = accent @18%, 1px border = accent @55%, the PNG
@@ -384,6 +485,12 @@ def tile(sheet: str | None, id_: str | None, size: int, accent: str,
     With `trim=True` the sprite's transparent margins are cut first so small
     sprites fill the tile instead of floating tiny in empty space (see
     pixmap_cropped).
+
+    A weapon the game can hand out at more than one rung (see `weapon_rungs`)
+    also wears its rung frame, one full-strength segment per rung around the
+    edge, so one tile carries the tiers a single-colour tile used to need
+    three of. `rungs` overrides which rungs are marked (a caller that knows
+    the reading states it); None derives them from the item id.
 
     `bg_alpha`/`border_alpha` override the tint strengths and DEFAULT TO THE
     VALUES ABOVE, so every existing caller is byte-identical. They exist for
@@ -398,17 +505,28 @@ def tile(sheet: str | None, id_: str | None, size: int, accent: str,
     pm.fill(QtGui.QColor(0, 0, 0, 0))
     p = QtGui.QPainter(pm)
     p.setRenderHint(QtGui.QPainter.Antialiasing)
+    marks = weapon_rungs(id_ or "") if rungs is None else rungs
     bg = QtGui.QColor(accent); bg.setAlpha(bg_alpha)   # ~18%
-    bd = QtGui.QColor(accent); bd.setAlpha(border_alpha)   # ~55%
     p.setBrush(bg)
-    p.setPen(QtGui.QPen(bd, 1))
-    p.drawRect(QtCore.QRectF(0.5, 0.5, size - 1, size - 1))   # sharp (0px) per design
+    if len(marks) > 1:
+        # No single-colour border: the rung frame IS the border.
+        p.setPen(QtCore.Qt.NoPen)
+        p.drawRect(QtCore.QRectF(0, 0, size, size))
+    else:
+        bd = QtGui.QColor(accent); bd.setAlpha(border_alpha)   # ~55%
+        p.setPen(QtGui.QPen(bd, 1))
+        p.drawRect(QtCore.QRectF(0.5, 0.5, size - 1, size - 1))   # sharp (0px) per design
     if sheet and id_ and has_icon(sheet, id_):
         if trim:
             g = pixmap_cropped(sheet, id_, size - 4)
         else:
             g = pixmap(sheet, id_, size - 4)
         p.drawPixmap((size - g.width()) // 2, (size - g.height()) // 2, g)
+    if len(marks) > 1:
+        # OVER the tile: the interior is transparent and the sprite sits
+        # padded inside the frame, so the art is untouched and the edge
+        # states the tiers.
+        p.drawPixmap(0, 0, rung_mark(size, marks))
     p.end()
     return pm
 
@@ -490,18 +608,20 @@ def outlined(sheet: str | None, id_: str | None, size: int, accent: str,
 
 @lru_cache(maxsize=512)
 def marker(name: str, size: int, accent: str | None = None, border: int = 2,
-           keyline: bool = True):
+           keyline: bool = True, sheet: str = "minimap"):
     """A map-marker with optional accent outline.
 
     `keyline=False` skips the dark 1px halo around the colored ring, so the
     outline reads as a single thin colored line instead of a ~2px edge.
+    `sheet` is the atlas category the sprite is read from (see `asset_icon`) -
+    the NPC directory's pet and mount markers come off the collection sheet.
 
     Missing/unknown marker assets degrade to an empty transparent pixmap (an
     accent dot when `accent` is given) instead of returning None, so callers
     like the Entity HUD's QLabel.setPixmap never crash on a missing asset."""
     QtGui, QtCore = _qt()
     b = 1 if size <= 28 else border
-    g = asset_icon(name, max(1, size - 2 * (b + 1)))
+    g = asset_icon(name, max(1, size - 2 * (b + 1)), sheet)
     if g is None or g.isNull():
         out = QtGui.QPixmap(size, size)
         out.fill(QtGui.QColor(0, 0, 0, 0))
@@ -725,14 +845,19 @@ def _render_svg(txt: str, size: int, color: str | None = None,
 
 
 @lru_cache(maxsize=64)
-def asset_icon(sheet_name: str, size: int):
+def asset_icon(sheet_name: str, size: int, sheet: str = "minimap"):
     """A bundled SVG or PNG map icon from assets/map_icons/<name>.(svg|png), scaled.
     Checks the atlas first, then the master svg, then falls back to loose
-    files in assets/icons; None if missing."""
+    files in assets/icons; None if missing.
+
+    `sheet` is the atlas category the sprite is looked up in, and it defaults to
+    the minimap sheet this function was written for: the NPC directory's pet and
+    mount counters draw COLLECTION art (`demondog_red`, `mount_boar_01`), which
+    lives on a different sheet, and both sheets render through this one path."""
     QtGui, QtCore = _qt()
 
     # 1. Try atlas sprite-sheet first
-    entry = atlas.find_entry("minimap", sheet_name)
+    entry = atlas.find_entry(sheet, sheet_name)
     if entry and isinstance(entry, dict):
         a_path = atlas.resolve_path(entry.get("file", ""))
         if a_path:

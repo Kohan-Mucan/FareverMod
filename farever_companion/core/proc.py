@@ -7,6 +7,7 @@ and no backend exposes a write primitive.
 from __future__ import annotations
 
 import os
+import re
 import struct
 import time
 
@@ -617,13 +618,13 @@ def get_farevermod_proxy_identity(file_path: str) -> dict[str, str]:
 
 
 def is_farever_proxy(file_path: str) -> bool:
-    """Verify whether a given DLL file is FareverPal's combat hook proxy.
+    """Verify whether a given DLL file is FareverMod's combat hook proxy.
 
     1. When reference checksums are available (hashes of the reference DLLs in
-       dps_bridge/), they are authoritative: a SHA256 match means FareverPal's
+       dps_bridge/), they are authoritative: a SHA256 match means FareverMod's
        proxy, any mismatch means a 3rd-party DLL (trainer, reshade, minimap
        dinput8.dll, ...).
-    2. The embedded telemetry signature (127.0.0.1:49152 or farever_dps + FareverPal)
+    2. The embedded telemetry signature (127.0.0.1:49152 or farever_dps + FareverMod)
        is only consulted when no reference DLLs are reachable at all (e.g. an
        older frozen build that shipped without them) - other mods can embed the
        same localhost/UDP string, so a signature must never override a hash
@@ -657,7 +658,7 @@ def is_farever_proxy(file_path: str) -> bool:
         file_hash = hashlib.sha256(content).hexdigest().lower()
 
         # 1. Reference checksums (hashes of the reference DLLs in dps_bridge/)
-        #    are authoritative: hash match = FareverPal proxy, mismatch = 3rd-party
+        #    are authoritative: hash match = FareverMod proxy, mismatch = 3rd-party
         #    DLL. No signature fallback while they are available - other mods can
         #    embed the same localhost/UDP strings and would otherwise be misidentified.
         ref_checksums = get_reference_checksums()
@@ -667,7 +668,7 @@ def is_farever_proxy(file_path: str) -> bool:
         # 2. Signature fallback (only when no reference DLLs are reachable, e.g.
         #    an old frozen build without a bundled dps_bridge): the proxy embeds
         #    its local UDP telemetry destination.
-        if b"127.0.0.1:49152" in content or (b"farever_dps" in content and b"FareverPal" in content):
+        if b"127.0.0.1:49152" in content or (b"farever_dps" in content and b"FareverMod" in content):
             return True
 
         return False
@@ -675,6 +676,155 @@ def is_farever_proxy(file_path: str) -> bool:
     verdict = _eval()
     _PROXY_VERIFY_CACHE[cache_key] = verdict
     return verdict
+
+
+#: Default Steam install roots, checked only when nothing is configured.
+_GAME_DIR_DEFAULTS = (
+    r"D:\Steam\steamapps\common\Farever",
+    r"C:\Program Files (x86)\Steam\steamapps\common\Farever",
+    r"C:\Steam\steamapps\common\Farever",
+)
+
+
+def game_install_dir() -> str:
+    """The Farever install folder, or "" when none can be found.
+
+    The saved `farever_game_dir` setting first, then the default Steam roots -
+    the order `detect_combat_bridge` has always used, extracted so an on-disk
+    fact (the client build, `game_build_version`) can be read WITHOUT first
+    inspecting a running process: a fight's client version must still be
+    readable with the game closed.
+    """
+    try:
+        from ..config import config_dir
+        import json
+        spath = config_dir() / "settings.json"
+        if spath.is_file():
+            with open(spath, "r", encoding="utf-8") as f:
+                saved = (json.load(f) or {}).get("farever_game_dir", "")
+            if saved and os.path.isdir(saved):
+                return saved
+    except Exception:
+        pass
+    for cand in _GAME_DIR_DEFAULTS:
+        if os.path.isdir(cand):
+            return cand
+    return ""
+
+
+_GAME_VERSION_CACHE: dict[str, str] = {}
+
+
+# VS_FIXEDFILEINFO field offsets inside the version resource. These are the
+# WINDOWS structure's own layout (dwSignature, dwStrucVersion, then the two
+# version halves), not a game offset - a game patch cannot move them, so they
+# deliberately stay here rather than in `constants.py`.
+_VS_FIXED_MAJOR_OFF = 8
+_VS_FIXED_MINOR_OFF = 12
+
+
+#: One `"key" "value"` pair of a Steam appmanifest (a small VDF file).
+_STEAM_PAIR_RE = re.compile(r'"([A-Za-z]+)"\s*"([^"]*)"')
+
+
+def _steam_build_id(install_dir: str) -> str:
+    """Steam's build id for an install folder, as ``steam-<id>``, else "".
+
+    On a real Farever install this is the ONLY source: the game's executable
+    ships with no version resource at all (verified live 2026-10-09 - both this
+    reader and Windows' own VersionInfo report it empty), so no dot-version
+    exists to read. Steam's appmanifest beside the install carries `installdir`
+    and `buildid`, which is exactly the granularity the question needs: a build
+    id changes on every patch, and before-or-after a patch is the whole point.
+    Best-effort by design - a non-Steam install has no manifest and gets "",
+    an honest unknown rather than a guess.
+    """
+    try:
+        parent = os.path.dirname(install_dir)
+        # Steam layout: <steamapps>/common/<install>, so the manifests of every
+        # other game sit one level above `common`.
+        if os.path.basename(parent).lower() != "common":
+            return ""
+        steamapps = os.path.dirname(parent)
+        want = os.path.basename(install_dir.rstrip("\\/")).lower()
+        for name in sorted(os.listdir(steamapps)):
+            low = name.lower()
+            if not low.startswith("appmanifest_") or not low.endswith(".acf"):
+                continue
+            with open(os.path.join(steamapps, name), "r", encoding="utf-8",
+                      errors="replace") as f:
+                pairs = dict(_STEAM_PAIR_RE.findall(f.read()))
+            if (pairs.get("installdir") or "").lower() != want:
+                continue
+            build = (pairs.get("buildid") or "").strip()
+            if build:
+                return f"steam-{build}"
+    except Exception:
+        return ""
+    return ""
+
+
+def game_build_version(install_dir: str = "") -> str:
+    """The installed Farever client's identity for an archive, or "" unknown.
+
+    Two sources, in order of precision. The executable's PE version resource
+    when the build carries one (a real ``"1.2.3.4"``), read by PATH - so it
+    needs no attachment and no memory offset, because the question it answers
+    ("was this number recorded before or after the patch?") is a question about
+    the file, and an archived fight has to stay explicable with the game
+    closed. Otherwise Steam's build id for the install (see `_steam_build_id`),
+    which is what a real Farever install actually has. Never the companion's
+    own version, which is only the build doing the reading, and never a
+    fabricated value: an unidentifiable client records as absent. Cached per
+    install, so a session pays for one read.
+    """
+    install = str(install_dir or "") or game_install_dir()
+    if not install:
+        return ""
+    key = os.path.normcase(install)
+    if key in _GAME_VERSION_CACHE:
+        return _GAME_VERSION_CACHE[key]
+    version = ""
+    path = os.path.join(install, PROCESS_NAME)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        dll = ctypes.WinDLL("version", use_last_error=True)
+        get_size = dll.GetFileVersionInfoSizeW
+        get_size.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        get_size.restype = wintypes.DWORD
+        get_info = dll.GetFileVersionInfoW
+        get_info.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                             ctypes.c_void_p]
+        get_info.restype = wintypes.BOOL
+        query = dll.VerQueryValueW
+        query.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR,
+                          ctypes.POINTER(ctypes.c_void_p),
+                          ctypes.POINTER(wintypes.UINT)]
+        query.restype = wintypes.BOOL
+
+        size = get_size(path, None)
+        if size:
+            buf = ctypes.create_string_buffer(size)
+            if get_info(path, 0, size, buf):
+                ptr = ctypes.c_void_p()
+                length = wintypes.UINT()
+                # "\\" asks for the root block, the language-independent
+                # VS_FIXEDFILEINFO - no translation table to resolve.
+                if query(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)) \
+                        and ptr.value and length.value >= 16:
+                    hi = ctypes.c_uint32.from_address(
+                        ptr.value + _VS_FIXED_MAJOR_OFF).value
+                    lo = ctypes.c_uint32.from_address(
+                        ptr.value + _VS_FIXED_MINOR_OFF).value
+                    version = f"{hi >> 16}.{hi & 0xFFFF}.{lo >> 16}.{lo & 0xFFFF}"
+    except Exception:
+        version = ""
+    if not version:
+        version = _steam_build_id(install)
+    _GAME_VERSION_CACHE[key] = version
+    return version
 
 
 def detect_combat_bridge(pid: int = 0, game_dir: str = "") -> dict:
@@ -714,29 +864,9 @@ def detect_combat_bridge(pid: int = 0, game_dir: str = "") -> dict:
             game_dir = os.path.dirname(game_exe)
 
     if not game_dir:
-        # Fallback to saved game_dir or default Steam install location
-        try:
-            from ..config import config_dir
-            import json
-            spath = config_dir() / "settings.json"
-            if spath.is_file():
-                with open(spath, "r", encoding="utf-8") as f:
-                    sdata = json.load(f)
-                    saved = sdata.get("farever_game_dir", "")
-                    if saved and os.path.isdir(saved):
-                        game_dir = saved
-        except Exception:
-            pass
-
-    if not game_dir:
-        for default_cand in (
-            r"D:\Steam\steamapps\common\Farever",
-            r"C:\Program Files (x86)\Steam\steamapps\common\Farever",
-            r"C:\Steam\steamapps\common\Farever",
-        ):
-            if os.path.isdir(default_cand):
-                game_dir = default_cand
-                break
+        # Saved game_dir, then the default Steam locations (see
+        # `game_install_dir`).
+        game_dir = game_install_dir()
 
     result = {
         "detected": False,
@@ -1014,14 +1144,14 @@ def detect_combat_bridge(pid: int = 0, game_dir: str = "") -> dict:
     elif result["third_party_dinput8"]:
         result["status_summary"] = (
             f"Third-party mod detected using dinput8.dll in {game_dir}. "
-            "Install userenv.dll to use FareverPal without conflicts."
+            "Install userenv.dll to use FareverMod without conflicts."
         )
     elif result["third_party_version"]:
         # version.dll stopped shipping (2026-09-24), so there is no second
         # proxy name to suggest over a 3rd-party copy of it.
         result["status_summary"] = (
             f"Third-party mod detected using version.dll in {game_dir}. "
-            "Install dinput8.dll to use FareverPal without conflicts."
+            "Install dinput8.dll to use FareverMod without conflicts."
         )
     else:
         result["status_summary"] = (
@@ -1162,7 +1292,7 @@ def cleanup_game_dir(game_dir: str = "", include_proxies: bool = True,
 
     Removes the stray `farever_dps.log` the hook DLL writes next to
     Farever.exe (the user asked for NO log files in the game dir) and, when
-    `include_proxies`, FareverPal's own proxy DLLs — identified by hash via
+    `include_proxies`, FareverMod's own proxy DLLs — identified by hash via
     is_farever_proxy() so a 3rd-party mod's version.dll/dinput8.dll is
     ALWAYS preserved and only reported.
 
@@ -1211,7 +1341,7 @@ def cleanup_game_dir(game_dir: str = "", include_proxies: bool = True,
             return summary
         gdir = _Path(game_dir)
 
-        # 1. FareverPal proxy DLLs (hash-verified; 3rd-party files survive)
+        # 1. FareverMod proxy DLLs (hash-verified; 3rd-party files survive)
         if include_proxies:
             # iphlpapi.dll retired 2026-09-23; like winmm, cleanup still
             # honours the name so a leftover from this week's builds goes too.

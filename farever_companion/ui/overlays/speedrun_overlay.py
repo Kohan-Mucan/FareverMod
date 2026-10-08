@@ -23,7 +23,7 @@ from PySide6 import QtCore, QtWidgets
 
 from .. import theme
 from ..copy_utils import copy_text as clipboard_copy
-from ..dps_source_text import resolved_mode
+from ..dps_source_text import difficulty_label, resolved_mode
 from ..overlay_base import OverlayWindow
 from ...core import attributes, game_state
 from ...core.speedrun import (
@@ -146,10 +146,10 @@ class SpeedrunRenderMixin:
             self._set_title(self.model.dungeon_mode() if self.model is not None else None)  # type: ignore[attr-defined]
             return
         tip = ("Difficulty read from the live boss level." if src == "auto" else
-               "Manual fallback - the live boss level can't be read on this build "
-               "(level offset not calibrated), so the title shows Hard. Hard is "
-               "the only difficulty shown; a detected Normal run is "
-               "saved to your profile only.")
+               "Manual fallback - the live boss level can't be read on this "
+               "build (level offset not calibrated), so the title shows the "
+               "game's Veteran. Veteran is the only difficulty shown; a "
+               "detected Normal run is saved to your profile only.")
         self._set_title(mode)  # type: ignore[attr-defined]
         self.titlebar.title.setToolTip(tip)
 
@@ -164,6 +164,68 @@ class SpeedrunDiagnosticsMixin:
             label.setStyleSheet(
                 f"color:{theme.MUTED};background:transparent;")
             label.show()
+
+    def _missing_reads(self, boss=None, *, instance_unknown=False) -> list[str]:
+        """Which of the Run Timer's inputs are MISSING this tick, by name.
+
+        Every hold message composes from here rather than restating a cause,
+        because the prescriptive text alone was wrong much of the time: "open
+        FareverMod before zoning in" is true only when the app really did start
+        late, and it is flat wrong when the scene read is failing, the player is
+        not located, or the map id did not resolve — all of which hold the clock
+        exactly as hard, and none of which opening the app earlier would fix.
+
+        `boss` carries the `(hp, max_hp, combat)` triple when the caller is
+        judging the BOSS attach; None leaves the boss out entirely, so the
+        instance-only messages do not blame reads they never looked at.
+
+        `instance_unknown` is the caller's OWN verdict that its instance read
+        came back unreadable. It only matters when no snapshot has been published
+        yet, because then the locator cannot tell an unreadable scene from a
+        healthy one: without it the instance hold would name nothing, which is
+        the exact silence this diagnostic exists to end.
+
+        Reads the SNAPSHOT, never the live scene: a diagnostic that costs a
+        fresh scene walk per tick would be a worse bug than the silence it is
+        replacing, and `map_id` is the only one of these the tick does not
+        already publish.
+        """
+        missing: list[str] = []
+        m = getattr(self, "model", None)
+        if m is None:
+            return ["game attach"]
+        st = game_state.published_state(m)
+        if st is None:
+            if getattr(m, "player_addr", None) is None:
+                missing.append("player locate")
+            elif instance_unknown:
+                missing.append("instance read")
+        else:
+            if not st.located:
+                missing.append("player locate")
+            elif not st.instance_known:
+                missing.append("instance read")
+            if not st.map_id:
+                missing.append("map id")
+        if boss is not None:
+            for name, value in zip(("boss HP", "boss max HP", "combat state"),
+                                   boss):
+                if value is None:
+                    missing.append(name)
+        return missing
+
+    @staticmethod
+    def _held_line(head: str, missing: list[str]) -> str:
+        """`head` plus the reads that are missing, when any are.
+
+        An empty list is NOT a failure: a hold can be a legitimate state with
+        every read healthy ("no outside baseline" while the scene answers
+        fine), and inventing a missing read there would be a lie in the one
+        place the player goes to find out why nothing is timing.
+        """
+        if not missing:
+            return head
+        return f"{head} — missing reads: {', '.join(missing)}"
 
     def _evaluate_boss_attach(self, current_hp: float | None) -> None:
         """Gate attach-only BOSS timing on pristine HP or explicit pre-combat."""
@@ -218,11 +280,43 @@ class SpeedrunDiagnosticsMixin:
                 "Run Timer decision: BOSS eligibility unknown "
                 f"(HP={current_hp if current_hp is not None else 'unreadable'}, "
                 "max HP unreadable, combat unreadable); RUN held, BOSS held")
-            self._set_run_status(
-                "Open FareverPal before zoning in — BOSS starts on the first hit")
+            self._set_run_status(self._held_line(
+                "BOSS held — boss reads unreadable",
+                self._missing_reads(boss=(current_hp, max_hp, in_combat))))
+
+    def _session_saw_outside(self) -> bool:
+        """Whether ANY tick this session proved the player outside the
+        instance — the manager's own tick, which runs whatever the windows are.
+
+        This window's row is INSTANCE-only, so the placement table does not
+        build it until the player is already inside (`overlay_manager`
+        `_build_allowed_here` drops it at locate). Its own hidden ticks are
+        therefore the wrong witness for the outside half of the zone-in edge:
+        a Run Timer born on the very zone-in that should start the clock would
+        hold with "Open FareverMod before zoning in" every single time. The
+        snapshot's `seen_outside` is that fact, latched per session, so a
+        window created inside an instance can still arm.
+        """
+        try:
+            st = game_state.published_state(self.model)
+        except Exception:
+            return False
+        return bool(getattr(st, "seen_outside", False))
 
     def _log_probe_edge(self, in_dungeon: bool | None) -> None:
         """Emit one compact Activity Log line per proven state/map transition."""
+        # Arm the edge from the session's proven-outside tick when this window
+        # was born already inside. It is the same edge the hidden ticks would
+        # have armed had the window existed in the open world — RUN still
+        # starts only on a real outside -> inside transition, and a window
+        # opened while already inside still holds, because then no tick ever
+        # proved an outside (the message's own promise).
+        if (in_dungeon is True and not self._seen_outside_instance
+                and not self._session_armed and self._session_saw_outside()):
+            self._session_armed = True
+            self._zone.feed(False)
+            self._seen_outside_instance = True
+            self._diag_hold_logged = False
         map_id = None
         if self.model is not None:
             try:
@@ -248,8 +342,14 @@ class SpeedrunDiagnosticsMixin:
                 self.log.emit(
                     "Run Timer decision: first observation is INSIDE; "
                     "RUN held until a proven outside -> inside edge")
-                self._set_run_status(
-                    "Open FareverPal before zoning in — RUN starts on dungeon entry")
+                # Name the missing input first, and keep the advice only here:
+                # for THIS hold the advice is the right one (RUN needs an
+                # outside -> inside edge, so an app opened after the zone-in
+                # really has missed the only start it will get).
+                self._set_run_status(self._held_line(
+                    "RUN held — instance: no outside baseline "
+                    "(open FareverMod before zoning in)",
+                    self._missing_reads()))
                 self._diag_hold_logged = True
 
 
@@ -303,7 +403,7 @@ def copy_text(model, clock: str, seconds: float | None,
     from ...core.speedrun import fmt_time
     boss = names.unit_name(boss_id) if boss_id else None
     dungeon = _dungeon_display(model)
-    mode_disp = (mode or "?").capitalize()
+    mode_disp = difficulty_label(mode) or "?"
     time_disp = fmt_time(seconds) if seconds is not None else "--:--.---"
     return (f"{player} ({cls}) · {boss or '--'} · "
             f"{dungeon} ({mode_disp}) · {_CLOCK_LABEL.get(clock, clock)} {time_disp}")
@@ -313,8 +413,8 @@ class SpeedrunOverlay(SpeedrunRenderMixin, SpeedrunDiagnosticsMixin, OverlayWind
 
     def __init__(self, model, settings, parent=None):
         super().__init__("Run Timer", settings, geo_key="speedrun", parent=parent)
-        # Title-bar difficulty is written as readable title case, e.g. Hard Mode.
-        # Detection provenance belongs in the tooltip, not in the HUD text.
+        # Title-bar difficulty is the game's own name for the rung, e.g.
+        # Veteran Mode. Detection provenance belongs in the tooltip, not here.
         self._title_mode = object()   # sentinel: forces the first paint
         self._set_title(None)
         self._page_key = "speedrun"
@@ -349,6 +449,12 @@ class SpeedrunOverlay(SpeedrunRenderMixin, SpeedrunDiagnosticsMixin, OverlayWind
         self._diag_map = object()
         self._seen_outside_instance = False
         self._diag_hold_logged = False
+        # One-shot: this window may take the session's proven-outside tick as
+        # its own baseline, but only the first time it looks (see
+        # `_log_probe_edge`). Deliberately NOT cleared by reset(): a finish's
+        # re-arm must still wait for a real outside observation, or a run that
+        # ended inside the instance would restart itself.
+        self._session_armed = False
 
         # dungeon-instance icon, shown next to the panel header when detected
         self._dg_icon = QtWidgets.QLabel()
@@ -512,13 +618,14 @@ class SpeedrunOverlay(SpeedrunRenderMixin, SpeedrunDiagnosticsMixin, OverlayWind
 
     # --- loop ------------------------------------------------------------
     def _set_title(self, mode: str | None) -> None:
-        """Readable fixed-size title: 'Run Timer · Hard Mode'."""
+        """Readable fixed-size title: 'Run Timer · Veteran Mode'."""
         if mode == self._title_mode:
             return
         self._title_mode = mode
         title = "Run Timer"
-        if mode:
-            title += f" · {mode.capitalize()} Mode"
+        label = difficulty_label(mode)
+        if label:
+            title += f" · {label} Mode"
         # Do not use rich-text spans here. Their tiny suffix size interacted
         # badly with per-overlay QSS scaling and could render near 2px. A plain
         # label with one direct style keeps the complete title readable at
@@ -607,6 +714,15 @@ class SpeedrunOverlay(SpeedrunRenderMixin, SpeedrunDiagnosticsMixin, OverlayWind
             self._set_title(self.model.dungeon_mode())
         except Exception:
             pass
+        if in_dungeon is None:
+            # The window is up and the instance edge is unreadable: say so, and
+            # name the read that is missing. Silence here was the reason a dead
+            # scene read looked exactly like a healthy idle timer. Only the
+            # visible path speaks — the hidden ticks are the zone-in witness and
+            # must not paint status into a window nobody can see.
+            self._set_run_status(self._held_line(
+                "RUN held — instance unknown",
+                self._missing_reads(instance_unknown=True)))
         t = self.timer
         running = (t.state == t.RUNNING)
 
@@ -1023,6 +1139,7 @@ class SpeedrunOverlay(SpeedrunRenderMixin, SpeedrunDiagnosticsMixin, OverlayWind
         self._diag_map = object()
         self._seen_outside_instance = False
         self._diag_hold_logged = False
+        self._session_armed = False
         self._outside_ticks = 0
         self.log.emit("Run Timer probe: model attached" if model is not None
                       else "Run Timer probe: model detached")

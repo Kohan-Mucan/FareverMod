@@ -1,4 +1,4 @@
-"""Master Backup manager for FareverPal user data.
+"""Master Backup manager for FareverMod user data.
 
 Maintains rolling timestamped snapshots in master_backup.json.
 Features:

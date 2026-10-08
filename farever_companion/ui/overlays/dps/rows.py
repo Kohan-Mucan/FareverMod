@@ -295,10 +295,14 @@ class _PlayerRowWidget(QtWidgets.QFrame):
                 # read), so re-apply the identity whenever it moves. Setting it
                 # only at creation left the overlay showing a stale label while
                 # the Combat page - which rebuilds its rows every render -
-                # showed the resolved one.
-                label = (sp.skill_id, sp.name)
+                # showed the resolved one. The "group" badge rides in the same
+                # identity key for the same reason: it can flip once a second
+                # player picks the buff up, and a pooled row would otherwise
+                # never show it.
+                group = bool(getattr(sp, "from_group_buff", False))
+                label = (sp.skill_id, sp.name, group)
                 if getattr(row, "_skill_label", None) != label:
-                    row.set_skill(sp.skill_id, sp.name)
+                    row.set_skill(sp.skill_id, sp.name, from_group_buff=group)
                     row._skill_label = label
 
                 row.update(sp, share_pct=s_share, mode=mode)

@@ -14,6 +14,7 @@ from PySide6 import QtCore, QtWidgets
 from .. import components as C
 from .. import theme
 from ..chips import ChoiceChips
+from ..dps_source_text import MANUAL_FALLBACK_MODE, difficulty_label
 from ...config import load_speedrun_history
 from ...core.speedrun import fmt_time
 from ...data import names
@@ -232,7 +233,10 @@ class PBPageMixin:
                 r.get("char") or "—",
                 r.get("dungeon") or "—",
                 _boss_label(r),
-                (r.get("mode") or "hard").capitalize(),
+                # the game's word for the rung, with the Run Timer's own
+                # fallback for a row that names none
+                difficulty_label(r.get("mode"))
+                or difficulty_label(MANUAL_FALLBACK_MODE),
                 _fmt_ms(r.get("full_ms")),
                 _fmt_ms(r.get("boss_ms")),
             )

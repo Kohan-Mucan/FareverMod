@@ -359,24 +359,16 @@ onto the DPS tab's bottom row)."""
         lay.addLayout(warn_row)
         # The numbers above need one sentence between them, and this page
         # carries it as a line on the card, not as a hover bubble
-        # (test_dps_settings_page_carries_no_hover_tooltips). The second line
-        # is where the sheet lives: a run is appended to a CSV in moddata/dps
-        # (per day, per character) so twenty runs can be compared at once.
+        # (test_dps_settings_page_carries_no_hover_tooltips). Three sentences:
+        # where the window may appear, what the zeros switch off, what Free
+        # Test withholds — nothing else, and no CSV line (finished tests are
+        # archived to the history JSON, never to a spreadsheet).
         note = QtWidgets.QLabel(
-            "Dummy Range is how close a training dummy has to be. The HUD "
-            "surfaces at a dummy inside it — and only at a dummy: it is an "
-            "open-world window, so it never appears inside a dungeon or a "
-            "rift, whatever else this card says.\n"
-            "The test ends itself at the target length, so every run is the "
-            "same length. 0 = run free until Stop Test.\n"
-            "Auto Re-arm ends a test that has stopped landing hits, so it "
-            "resets without walking away from the dummy. 0 = never auto-end.\n"
-            "A test that takes more than this share of its own damage back is "
-            "flagged as not a clean measurement. 0 = flag any damage taken.\n"
-            "Free Test records nothing: the run still shows on the HUD, but it "
-            "is not archived and never becomes the best to beat.\n"
-            "Each finished test is appended to a CSV in moddata/dps (per day, "
-            "per character), so runs can be compared in a spreadsheet.")
+            "Dummy-only HUD: it never appears inside a dungeon or a rift. "
+            "A 0 switches its control off — free-run length, never re-arm, "
+            "flag any damage taken. "
+            "Free Test records nothing: never archived, never the best "
+            "to beat.")
         note.setWordWrap(True)
         note.setStyleSheet(
             f"font-size: 10px; font-weight: 600; color: {theme.DIM};")

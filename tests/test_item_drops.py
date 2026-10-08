@@ -1119,34 +1119,51 @@ def test_gear_rarity_tiers_own_rarity():
            for s in idata.gear_stats(it, level=25)["stats"]}
     base_col = {s["label"]: s["value"] for s in tiers[0]["stats"]}
     assert base_col == own
-    # Shields are weapons (they carry affinity + skills in the sheets), so
-    # they expand to the full weapon ladder from their DISPLAY rarity —
-    # Shield_Start (authored Uncommon) is sold as Rare by the Guild
-    # Merchants, so the columns start at Rare +3, not the authored Uncommon
+    # Shields are weapons, but Shield_Start is VENDOR-ONLY: the town merchants
+    # sell it Rare and no box hands it out above that, so it gets ONE column
+    # (Rare +3), from its DISPLAY rarity rather than the authored Uncommon
     # (which cannot upgrade live)
     shield = idata.item("Shield_Start")
     assert shield["rarity"] == "Uncommon"
     assert idata.category("Shield") == "Weapons"
+    assert idata.obtainable_tiers("Shield_Start") == ("Rare",)
     assert [(t["rarity"], t["upgrades"])
-            for t in idata.gear_rarity_tiers(shield, level=25)] == [
-                ("Rare", 3), ("Epic", 4), ("Legendary", 5)]
+            for t in idata.gear_rarity_tiers(shield, level=25)] == [("Rare", 3)]
     # Jewelry is like armor: per-rarity stats not in the game yet — base
     # column only (Trinket_Demon, Rare +3)
     trinket = idata.item("Trinket_Demon")
     assert [(t["rarity"], t["upgrades"])
             for t in idata.gear_rarity_tiers(trinket, level=25)] == [
                 ("Rare", 3)]
-    # Weapons DO carry per-rarity stats in-game: the ladder from own up
-    axe = idata.item("GA_Demon")
-    assert axe["rarity"] == "Rare"
+    # A WEAPON expands only up the rungs the game can actually hand it out at
+    # (`obtainable_tiers`). The Hero Weapon Cache rolls Epic..Legendary for its
+    # four pool ids, so Glory carries the whole staircase...
+    glory = idata.item("Sword_Craft")
+    assert glory["rarity"] == "Rare"
+    assert idata.obtainable_tiers("Sword_Craft") == ("Rare", "Epic",
+                                                     "Legendary")
     assert [(t["rarity"], t["upgrades"])
-            for t in idata.gear_rarity_tiers(axe, level=25)] == [
+            for t in idata.gear_rarity_tiers(glory, level=25)] == [
                 ("Rare", 3), ("Epic", 4), ("Legendary", 5)]
-    # Guild Merchant gear scales (the vendor sells it scaled to each town):
-    # Sword_Start shows the full Rare/Epic/Legendary ladder; non-gear none
-    assert [(t["rarity"], t["upgrades"]) for t in
-            idata.gear_rarity_tiers(idata.item("Sword_Start"), level=25)] == [
-                ("Rare", 3), ("Epic", 4), ("Legendary", 5)]
+    # ...and a weapon no box rolls and no dungeon drops stops at its own
+    # column — the vendor-only starter pieces. That is the rule the ladder
+    # used to skip: it expanded EVERY weapon to every rung above its own.
+    # Every BOSS-dropped weapon rolls the whole staircase: the sheet's
+    # `generationChance` roll opens Epic/Legendary, and every dungeon's
+    # difficulties scale the drop level, so even Twin Fangs of Ratsar
+    # (base dungeon level 10) reads Rare/Epic/Legendary.
+    for iid in ("Sword_Start", "Shield_Start"):
+        assert idata.obtainable_tiers(iid) == ("Rare",), iid
+        assert [(t["rarity"], t["upgrades"]) for t in
+                idata.gear_rarity_tiers(idata.item(iid), level=25)] == [
+                    ("Rare", 3)], iid
+    for iid in ("DA_Water", "Shield_OrbitWater", "Daggers_DuplicatePoison",
+                "Mace_Benediction", "GA_Demon"):
+        assert idata.obtainable_tiers(iid) == ("Rare", "Epic",
+                                               "Legendary"), iid
+        assert [(t["rarity"], t["upgrades"]) for t in
+                idata.gear_rarity_tiers(idata.item(iid), level=25)] == [
+                    ("Rare", 3), ("Epic", 4), ("Legendary", 5)], iid
     assert idata.gear_rarity_tiers(idata.item("CopperIngot"), level=25) is None
 
 
@@ -1204,14 +1221,21 @@ def test_upgrade_ladder_per_rarity():
     assert lad[0]["material"] == "Spark Shard"
     assert [c["material"] for c in lad[0]["steps"][1]["costs"]] == [
         "Spark Dust", "Spark Shard"]
-    # Weapons carry the full per-rarity ladder — Rare +3 / Epic +4 /
-    # Legendary +5 — computed from the curves (they use per-rarity stats
-    # in-game)
-    axe = idata.item("GA_Demon")
-    axel = idata.upgrade_ladder(axe, level=25)
+    # A weapon carries the per-rarity ladder only up the rungs the game can
+    # HAND IT OUT AT: Glory is in the Hero Weapon Cache's pool, which rolls
+    # Epic..Legendary, so it gets Rare +3 / Epic +4 / Legendary +5
+    glory = idata.item("Sword_Craft")
+    gloryl = idata.upgrade_ladder(glory, level=25)
+    assert [r["rarity"] for r in gloryl] == ["Rare", "Epic", "Legendary"]
+    assert [r["upgrades"] for r in gloryl] == [3, 4, 5]
+    assert [len(r["steps"]) for r in gloryl] == [3, 4, 5]
+    assert all(s["gains"] for r in gloryl for s in r["steps"])
+    # ...and a weapon the game rolls higher gets the whole staircase:
+    # Worldsplitter drops from the level-25 rift boss Maat, whose level
+    # opens the sheet's Epic/Legendary roll bands
+    axel = idata.upgrade_ladder(idata.item("GA_Demon"), level=25)
     assert [r["rarity"] for r in axel] == ["Rare", "Epic", "Legendary"]
     assert [r["upgrades"] for r in axel] == [3, 4, 5]
-    assert [len(r["steps"]) for r in axel] == [3, 4, 5]
     assert all(s["gains"] for r in axel for s in r["steps"])
     # Jewelry is like armor: per-rarity stats not in the game yet, so one
     # column — Rare +3
@@ -1248,11 +1272,13 @@ def test_upgrade_ladder_per_rarity():
         assert crystal and crystal[0]["count"] == 3, iid
     # Guild Merchant gear (the starter weapons) is SHOP gear: the vendor
     # sells it scaled to each town, so even the fixed-affix handout row
-    # scales via its type's budget — the ladder shows the full Rare/Epic/
-    # Legendary columns with real values, like the town weapons
+    # scales via its type's budget — the ladder carries real values. It
+    # carries the rungs THE GAME CAN HAND IT OUT AT, though, and this one is
+    # sold Rare everywhere: no box grants it higher, so the Rare column is
+    # the whole ladder (see sources.obtainable_tiers).
     sw = idata.upgrade_ladder(idata.item("Sword_Start"), level=25)
-    assert [r["rarity"] for r in sw] == ["Rare", "Epic", "Legendary"]
-    assert [r["upgrades"] for r in sw] == [3, 4, 5]
+    assert [r["rarity"] for r in sw] == ["Rare"]
+    assert [r["upgrades"] for r in sw] == [3]
     assert all(s["gains"] for r in sw for s in r["steps"])
     assert {b["label"] for b in sw[0]["base"]} >= {"Vitality", "Strength"}
     # non-gear has no ladder
@@ -1264,8 +1290,10 @@ def test_upgrade_max_totals_match_rarity_tiers():
     the ladder's base equals the rarity tiers' values for each rarity, and
     base + the summed per-step gains equals the real stat values at the max
     upgrade level (the end state the BY STEP table's final column shows)."""
+    # Sword_Craft (Glory) is the multi-column case: the Hero Weapon Cache
+    # hands it out at Epic..Legendary, so its ladder really has three rungs
     for item_id in ("Chest_RDemon_Ass", "GA_Demon", "Shield_Start",
-                    "Sword_Swarm"):
+                    "Sword_Swarm", "Sword_Craft"):
         it = idata.item(item_id)
         if not it or not it.get("atb"):
             continue
@@ -1858,11 +1886,14 @@ def test_upgrade_ladder_own_rarity_is_display_rarity():
     expands from its shop-quality column — RARE — instead of the authored
     green Uncommon starter column. Non-vendor gear and crafted gear are
     unchanged (display = authored rarity)."""
+    # Both starters are vendor-only, so the base column is Rare (the shop
+    # quality, not the authored green Uncommon) AND the only rung there is
     lad = idata.upgrade_ladder(idata.item("Book_Start"), level=25)
-    assert [r["rarity"] for r in lad] == ["Rare", "Epic", "Legendary"]
+    assert [r["rarity"] for r in lad] == ["Rare"]
     lad = idata.upgrade_ladder(idata.item("Daggers_Start"), level=25)
-    assert [r["rarity"] for r in lad] == ["Rare", "Epic", "Legendary"]
-    # the town weapons already expand from Rare — unchanged
+    assert [r["rarity"] for r in lad] == ["Rare"]
+    # the town weapons already expand from Rare, and Glory carries the whole
+    # staircase because the Hero Weapon Cache rolls it at Epic..Legendary
     assert [r["rarity"] for r in idata.upgrade_ladder(
         idata.item("Sword_Craft"), level=25)] == ["Rare", "Epic", "Legendary"]
     # non-vendor gear keeps its authored rarity (display = authored)
@@ -1883,6 +1914,9 @@ def test_upgrade_ladder_default_level_vendor_gear():
     jud = idata.item("GA_Craft")
     lad = idata.upgrade_ladder(jud)
     at25 = idata.upgrade_ladder(jud, level=25)
+    # Judgement is sold L25 and drops from the L19 boss Munster Chuck, whose
+    # level opens the sheet's Epic/Legendary roll bands — so the default
+    # ladder is the whole staircase, with the L25 sale values in column one
     assert [r["rarity"] for r in lad] == ["Rare", "Epic", "Legendary"]
     assert lad[0]["steps"][0]["count"] == at25[0]["steps"][0]["count"]
     assert {b["label"]: b["value"] for b in lad[0]["base"]} == \
@@ -2359,8 +2393,16 @@ def test_weapon_upgrade_passive_ladder():
     # each value is keyed to exactly ONE rank, so the ladder's own per-rarity
     # upgrade counts are what caps the bonus: a Rare axe stops at +3%, an
     # Epic one reaches +4% and only a Legendary reaches +5%
+    # Cheese Moon is a boss weapon: its dungeon rolls Rare/Epic/Legendary,
+    # so the ladder that caps the bonus has all three rungs even though the
+    # skill itself defines five ranks
     ladder = idata.upgrade_ladder(idata.item("Axe_Boomerang"), level=25)
     assert {c["rarity"]: c["upgrades"] for c in ladder} == {
+        "Rare": 3, "Epic": 4, "Legendary": 5}
+    # a weapon the game DOES hand out higher keeps the rungs that cap it
+    # further: the heroic cache's pool reaches Epic +4 / Legendary +5
+    dl = idata.upgrade_ladder(idata.item("Sword_Craft"), level=25)
+    assert {c["rarity"]: c["upgrades"] for c in dl} == {
         "Rare": 3, "Epic": 4, "Legendary": 5}
     assert max(pas["values"]) == 5          # the top rank the bonus defines
 
@@ -2404,18 +2446,28 @@ def test_weapon_upgrade_trait_line_and_skill_flag():
     # sheet defines ranks 1–5, but a piece's rarity is what buys them, and the
     # engine hands the granted skill a rank shifted by that rarity (see
     # granted_rank) — so a Rare axe's ceiling is +2%, not the ladder's +
-    assert tr["text"] == ("Weapon Upgraded — Critical Chance: Rare +2%"
-                          " · Epic +3% · Legendary +4%.")
+    assert tr["text"] == ("Weapon Upgraded — Critical Chance: Rare +2% ·"
+                           " Epic +3% · Legendary +4%.")
     # ...and each rarity bit is tagged so the card can colour it like that
     # rarity's ladder column; the parts must join back to the plain sentence
-    assert [r for _, r in tr["parts"] if r] == ["Rare", "Epic", "Legendary"]
+    assert [r for _, r in tr["parts"] if r] == ["Rare", "Epic",
+                                                "Legendary"]
     assert "".join(t for t, _ in tr["parts"]) == tr["text"]
     assert [t for t, r in tr["parts"] if r] == ["Rare +2%", "Epic +3%",
-                                                 "Legendary +4%"]
-    # a fist weapon names its own attribute, same mechanism
+                                                "Legendary +4%"]
+    # a fist weapon names its own attribute, same mechanism — and it drops
+    # from the level-22 RobinHoof, so its run spells every reachable rung
     fists = idata.weapon_upgrade_trait("Fists_LightMonk")
-    assert "Physical Mastery: Rare +5% · Epic +6% · Legendary +7%" \
-        in fists["text"]
+    assert "Physical Mastery: Rare +5% · Epic +6% · Legendary +7%." in \
+        fists["text"]
+    # A weapon the game DOES hand out higher spells every reachable rung out,
+    # in rarity order — Radiance, from the Hero Weapon Cache (affix path)
+    rad = idata.weapon_upgrade_trait("Staff_Craft")
+    assert rad["text"] == ("Weapon Upgraded — Cooldown Reduction:"
+                           " Rare +3% · Epic +4% · Legendary +5%.")
+    assert [r for _, r in rad["parts"] if r] == ["Rare", "Epic", "Legendary"]
+    assert [t for t, r in rad["parts"] if r] == ["Rare +3%", "Epic +4%",
+                                                 "Legendary +5%"]
     # the vars-only types get their own shape: the sheet's sentence carrying the
     # value THIS piece is granted, labelled with its rarity, then EVERY
     # reachable rarity as a labelled bit, in rarity order — its own first
@@ -2425,20 +2477,34 @@ def test_weapon_upgrade_trait_line_and_skill_flag():
     # UNLABELLED: the value granted at the piece's own rarity (10% at Rare),
     # left exactly where the sheet put the number. The run then repeats it as
     # the piece's own bit, in order beside the higher rarities — so the value is
-    # named twice but its rarity only once, and only ever as a colour
+    # named twice but its rarity only once, and only ever as a colour. This
+    # boss bow drops from level-16+ dungeons, whose level opens the sheet's
+    # Epic/Legendary roll bands, so the run spells every reachable rung...
     assert bow["text"] == (
         "Weapon Upgraded — Damage dealt by your Basic Attacks to enemies at"
         " 20m minimum increased by 10% — Rare 10% · Epic 12% ·"
         " Legendary 14%.")
     assert [r for _, r in bow["parts"] if r] == ["Rare", "Epic",
                                                  "Legendary"]
-    assert [t for t, r in bow["parts"] if r] == ["Rare 10%",
-                                                 "Epic 12%", "Legendary 14%"]
+    assert [t for t, r in bow["parts"] if r] == ["Rare 10%", "Epic 12%",
+                                                 "Legendary 14%"]
     assert "".join(t for t, _ in bow["parts"]) == bow["text"]
+    # ...and Credence, the cache's bow, repeats it beside Epic and Legendary
+    cred = idata.weapon_upgrade_trait("Bow_Craft")
+    assert cred["text"] == (
+        "Weapon Upgraded — Damage dealt by your Basic Attacks to enemies at"
+        " 20m minimum increased by 10% — Rare 10% · Epic 12% ·"
+        " Legendary 14%.")
+    assert [r for _, r in cred["parts"] if r] == ["Rare", "Epic",
+                                                 "Legendary"]
+    assert [t for t, r in cred["parts"] if r] == ["Rare 10%",
+                                                 "Epic 12%", "Legendary 14%"]
+    assert "".join(t for t, _ in cred["parts"]) == cred["text"]
     assert bow["text"].count("10%") == 2    # inline, then the run's own bit
     assert "by 8%" not in bow["text"]         # never the unreachable base
-    # the run is ordered, and the piece's own rarity leads it
-    at = {t: bow["text"].index(t)
+    # the run is ordered, and the piece's own rarity leads it — read on
+    # Credence, the one bow that reaches every rung
+    at = {t: cred["text"].index(t)
           for t in ("Rare 10%", "Epic 12%", "Legendary 14%")}
     assert at["Rare 10%"] < at["Epic 12%"] < at["Legendary 14%"]
 
@@ -2545,11 +2611,13 @@ def test_weapon_upgrade_ladders_survive_the_frozen_build():
             {r: f"+{r}%" for r in range(1, 6)}
         assert idata.weapon_upgrade_passive("Bow_BigGame")["per_rank"] == \
             {1: "8%", 2: "10%", 3: "12%", 4: "14%", 5: "16%"}
-        # ...and the card's ⚡ line still renders its per-rarity values
+        # ...and the card's ⚡ line still renders its per-rarity values, one per
+        # rung the piece can reach: Cheese Moon rolls all three from its
+        # dungeon, like Glory out of the heroic cache
         assert idata.weapon_upgrade_trait("Axe_Boomerang")["text"] == (
-            "Weapon Upgraded — Critical Chance: Rare +2% · Epic +3% · "
-            "Legendary +4%.")
-        assert idata.weapon_upgrade_trait("GS_Nova")["text"] == (
+            "Weapon Upgraded — Critical Chance: Rare +2% · Epic +3% ·"
+            " Legendary +4%.")
+        assert idata.weapon_upgrade_trait("Sword_Craft")["text"] == (
             "Weapon Upgraded — Your Basic Attacks have a 5% chance to "
             "attack twice — Rare 5% · Epic 6% · Legendary 7%.")
     finally:
@@ -2616,9 +2684,17 @@ def test_both_weapon_upgrade_ladders_share_one_rank_map():
     # granted rank off granted_rank whatever the ladder's shape, so an effect
     # type shows the same rank an affix type would (5% / 6% / 7% for the
     # greatsword's 4..8% ladder, not its raw ranks 6/7/8)
-    for iid, own, kind in (("Axe_Boomerang", "Rare +2%", "attribute"),
-                           ("GS_Nova", "Rare 5%", "effect"),
-                           ("Bow_BigGame", "Rare 10%", "effect")):
+    # Every rung the piece can reach is stated, in rarity order — boss
+    # weapons roll all three from their dungeons, like the cache pool
+    for iid, own, kind, rungs in (
+            ("Axe_Boomerang", "Rare +2%", "attribute",
+             ("Rare", "Epic", "Legendary")),
+            ("Staff_Craft", "Rare +3%", "attribute",
+             ("Rare", "Epic", "Legendary")),
+            ("Sword_Craft", "Rare 5%", "effect",
+             ("Rare", "Epic", "Legendary")),
+            ("Bow_Craft", "Rare 10%", "effect",
+             ("Rare", "Epic", "Legendary"))):
         pas = idata.weapon_upgrade_passive(iid)
         tr = idata.weapon_upgrade_trait(iid)
         assert pas["kind"] == kind
@@ -2627,19 +2703,19 @@ def test_both_weapon_upgrade_ladders_share_one_rank_map():
         # in front. The effect path's prose states that value too, but the
         # rarity is tagged once per rarity either way: that copy of the prose is
         # the GAME's own sentence, which carries no rarity word (only the run)
-        assert [r for _, r in tr["parts"] if r] == \
-            ["Rare", "Epic", "Legendary"], iid
+        assert [r for _, r in tr["parts"] if r] == list(rungs), iid
         run = [f"{r} {pas['per_rank'][idata.granted_rank(r)]}"
-               for r in ("Rare", "Epic", "Legendary")]
+               for r in rungs]
         tagged = [t for t, r in tr["parts"] if r]
-        assert tagged[-3:] == run, iid
+        assert tagged[-len(rungs):] == run, iid
         # the piece's own value lands twice on an effect type (once where the
         # sheet put it, once in the run) and exactly once on an affix type
         val = pas["per_rank"][idata.granted_rank("Rare")]
         assert tr["text"].count(val) == (2 if kind == "effect" else 1), \
             (iid, tr["text"])
         # ...and the run's copy of it follows Epic and Legendary labels in order
-        assert tr["text"].index(own) < tr["text"].index("Epic "), iid
+        if len(rungs) > 1:
+            assert tr["text"].index(own) < tr["text"].index("Epic "), iid
 
 
 def test_granted_rank_matches_the_in_game_reading():
@@ -2750,6 +2826,10 @@ def test_trait_line_runs_from_the_piece_display_rarity(monkeypatch):
         catalog.weapon_upgrade_passive.cache_clear()
         return [t for t, r in tr["parts"] if r]
 
+    # The piece's own bit is its display rarity's — and the rungs the game
+    # can HAND IT OUT AT follow it: Cheese Moon rolls all three from its
+    # dungeon, so a patched Epic copy states Epic and Legendary, a patched
+    # Legendary copy the Legendary value alone
     assert bits("Rare") == ["Rare +2%", "Epic +3%", "Legendary +4%"]
     assert bits("Epic") == ["Epic +3%", "Legendary +4%"]
     assert bits("Legendary") == ["Legendary +4%"]
@@ -2956,6 +3036,71 @@ def test_demon_rift_dungeon_labels_spell_out_the_title():
     assert labels["DemonSuperElite_Fairy"] == \
         "Rift Nightqueen Shaarlize Te'ror"
     assert "Phrixes" not in labels     # Crimson's boss, not Nightling's
+
+
+def test_the_dump_ships_both_rifts_so_nothing_is_recovered_here():
+    """The compiled payload carries the rifts, so the app keeps no recovery.
+
+    `dungeons.json` files the rifts as bare `POI_Rift_01/02/03` records — no
+    boss, name, level or entrance zone — which used to drop the whole Nightling
+    family out of the Dungeons tab (two bosses, four weapons) and make
+    `by_entrance_zone()` key a nameless row. The dungeon scan states each rift's
+    own identity on its sheet row instead (id, title, boss, level, the shared
+    'Rifts' entrance, its mob list and `is_rift`) and the compiler ships those
+    rows as they stand, so this pins the shipped payload itself: every field is
+    read back out of `raw_data['dungeons']`.
+    """
+    from farever_companion.data import dungeons, raw_data
+    compiled = raw_data.DATA["dungeons"]
+    # the bare POI records are gone, not shipped beside the carried rifts
+    assert not [d for d in compiled
+                if d.get("kind") == "rift" and not d.get("boss_id")]
+    rifts = {d["id"]: d for d in compiled if d.get("is_rift")}
+    assert set(rifts) == {"rift_maat", "rift_shaarlize"}
+    for did, boss_id, level, zone in (
+            ("rift_maat", "DemonSuperElite", 25, "Z1_Enripit_Falls"),
+            ("rift_shaarlize", "DemonSuperElite_Fairy", 25, "Z2_Krisomal_North")):
+        row = rifts[did]
+        assert row["boss_id"] == boss_id
+        assert row["kind"] == "rift"
+        assert row["entrance_zone"] == "Rifts"
+        assert row["is_rift"] is True
+        assert row["level"] == level
+        assert row["name"].startswith("Rift ")
+        # the sheet's `ingame_name` is the raw key the rift is filed under
+        # ('maat' / 'shaarlize') - what `items/sources.py` reads to spot a rift
+        # row and to map the `*_LT2` tables onto their boss
+        assert row["ingame_name"] == did.split("_", 1)[1]
+        assert row["boss_icon"] == f"icons/units/{boss_id}.png"
+        # its own spawn zone: both rifts share the 'Rifts' entrance, so the
+        # sheet's curated `zone` is the only thing that says which gate leads
+        # to which boss
+        assert row["zone"] == zone
+        assert row["mobs"], did          # the invaders the rift shares
+    # `load_dungeons` surfaces exactly what the dump declares, nothing added
+    rows = {d["id"]: d for d in dungeons.load_dungeons()}
+    assert set(rifts) <= set(rows)
+    assert not [d for d in dungeons.load_dungeons()
+                if d.get("kind") == "rift" and not d.get("boss_id")]
+    # the row's own `zone` is what resolves the rift's spawn zone
+    assert dungeons.zone_tag(rows["rift_maat"]) == "Z1"
+    assert dungeons.zone_tag(rows["rift_shaarlize"]) == "Z2"
+    # and the app keeps no rift -> zone table of its own: one source, so a
+    # curated correction cannot silently disagree with a stale map here
+    assert not hasattr(dungeons, "_RIFT_ZONE_BY_ID"), (
+        "the app is holding a rift -> zone table again - the sheet's rows state "
+        "each rift's zone")
+    assert dungeons.zone_tag({"id": "rift_maat", "entrance_zone": "Rifts"}) is None, (
+        "a rift row with no `zone` must resolve to nothing rather than to an "
+        "invented zone")
+    # one shared 'Rifts' entrance, so this map can only ever name one of them
+    assert dungeons.by_entrance_zone()["Rifts"]["id"] in rifts
+    # and the family they belong to is whole again: 2 bosses, 4 signature weapons
+    demon = [g for g in idata.dungeon_drop_groups()
+             if g["faction"] == "Demon"][0]
+    assert sorted(b["boss_id"] for b in demon["bosses"]) == \
+        ["DemonSuperElite", "DemonSuperElite_Fairy"]
+    assert sum(len(b["weapons"]) for b in demon["bosses"]) == 4
 
 
 def test_infusion_and_mog_acquisition_surface():

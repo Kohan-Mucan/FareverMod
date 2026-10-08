@@ -55,6 +55,13 @@ _TIER_FOLD_PX = 14
 _TIER_PX = 14
 # the granted skill's own size — the row's title, one step above the tiers
 _SKILL_PX = 15
+# the pattern's item icon at the head of the title line. Sized to the TITLE
+# LINE, not to the 26px tiles of the scrolls/gem tables: the granted skill's
+# 15px label already makes that line ~20px tall, so a 20px square rides it
+# without growing it — which is what keeps a faction's three rows clear of the
+# fold (see _TIER_PX). A 26px tile added ~6px a card and pushed the three-row
+# faction back past the default window's fold.
+_INFUSION_ICON = 20
 _MONO = f'font-family:"{theme.MONO_FONT}","Consolas",monospace;'
 # NO tier is gold: the (2)/(4)/(6) tags all wear one label color (the
 # ladder's shape is not news, and a gold (4) tag made the label read as part
@@ -350,8 +357,12 @@ class EnchantsInfusionsMixin:
         then flashed a brighter box on click, and an element picker probing
         the running app synthesizes a mouse-over — so the row lit up under a
         mouse nobody moved. What is left is type: the role color, nothing to
-        fill and nothing to press. No item icon either — the pattern art is a
-        scroll glyph that said nothing the name and role don't."""
+        fill and nothing to press.
+
+        The pattern's item icon is NOT part of this button: the title line
+        leads with its own IconTile (see _ench_infusion_header), so the icon
+        carries none of the button's states and the click that opens the card
+        is still the name alone."""
         color = _ROLE_COLOR.get(p["role"], theme.MUTED)
         pill = QtWidgets.QPushButton(p["name"].upper())
         pill.setFlat(True)
@@ -403,6 +414,15 @@ class EnchantsInfusionsMixin:
         h = QtWidgets.QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(8)
+        # the pattern's own item icon, leading the title line — the same
+        # IconTile the scrolls/gems/conversions rows open with, so the
+        # Infusions tab reads like the rest of the page. It is a LABEL, not a
+        # link: the name beside it stays the row's one click into the item
+        # card (and the row turns no cursor into a hand — see
+        # _ench_infusion_pill).
+        tile = C.IconTile(_INFUSION_ICON)
+        tile.set("item", p["item"], theme.ACCENT)
+        h.addWidget(tile, 0, QtCore.Qt.AlignVCenter)
         h.addWidget(pill, 0, QtCore.Qt.AlignVCenter)
         sk = QtWidgets.QLabel()
         sk.setTextFormat(QtCore.Qt.RichText)
@@ -732,11 +752,16 @@ class EnchantsPageBase(EnchantsUpgradesMixin, EnchantsRowsMixin,
         self._ench_gems_card = gcard
         self._ench_convs_card = ccard
         self._ench_upgrades_card = ucard
+        # the Soulwell station — the ritual that eats the Corrupted Gifts this
+        # page's Conversions tab lists. Its own tab, its own module
+        # (`items/soulwell.py`): a static card (sheet rules + the gift stepper),
+        # so `_ench_refilter` neither builds nor clears anything on it
+        self._ench_soulwell_card = self._ench_soulwell_panel()
         # category tabs (mockup B) — one full-width group per tab, the
         # tabs ARE the section picker; the page opens on Gems, Scrolls last
         self._ench_tabs = C.UnderlineTabs(
             ["Gems", "Augments", "Conversions", "Elixirs", "Food",
-             "Scrolls", "Infusions", "Upgrades"])
+             "Scrolls", "Infusions", "Upgrades", "Soulwell"])
         self._ench_tabs.currentChanged.connect(self._ench_refilter)
         v.addWidget(self._ench_tabs)
         # the seven cards, one per tab — full width, shown by the active tab
@@ -748,6 +773,7 @@ class EnchantsPageBase(EnchantsUpgradesMixin, EnchantsRowsMixin,
         v.addWidget(icard)
         v.addWidget(acard)
         v.addWidget(ucard)
+        v.addWidget(self._ench_soulwell_card)
         v.addStretch(1)
 
         self._ench_refilter()
@@ -788,9 +814,10 @@ class EnchantsPageBase(EnchantsUpgradesMixin, EnchantsRowsMixin,
                 n = sum(1 for it in self._ench_elixirs if _grants(it, s))
             elif tab == "Food":
                 n = sum(1 for it in self._ench_foods if _grants(it, s))
-            elif tab == "Upgrades":
-                n = 0               # materials grant no stats; the tab
-                                    # leaves the chips untouched (see
+            elif tab in ("Upgrades", "Soulwell"):
+                n = 0               # materials grant no stats, and the
+                                    # Soulwell tab is sheet rules; both
+                                    # leave the chips untouched (see
                                     # _ench_refilter)
             else:                                   # Augments
                 n = sum(1 for it in (self._ench_enchanter
@@ -980,10 +1007,11 @@ class EnchantsPageBase(EnchantsUpgradesMixin, EnchantsRowsMixin,
         # visible even at '· 0' — a gear page's ENCHANTS chip jumps here
         # pre-filtered and the pick must survive landing on a tab with
         # no rows for it (the user then flips to the right tab). The
-        # Upgrades tab grants no stats, so it leaves the chips exactly as
-        # the previous tab left them instead of hiding everything.
+        # Upgrades tab grants no stats and the Soulwell tab is sheet rules
+        # with no stat rows, so both leave the chips exactly as the previous
+        # tab left them instead of hiding everything.
         tab = self._ench_tabs.currentText()
-        if tab not in ("Upgrades", "Infusions"):
+        if tab not in ("Upgrades", "Infusions", "Soulwell"):
             counts = self._ench_stat_counts()
             self._ench_stat.set_option_labels(
                 {s: f"{s} · {n}" for s, n in counts.items()})
@@ -1001,7 +1029,8 @@ class EnchantsPageBase(EnchantsUpgradesMixin, EnchantsRowsMixin,
                           ("Elixirs", self._ench_elixirs_card),
                           ("Food", self._ench_foods_card),
                           ("Infusions", self._ench_infusions_card),
-                          ("Augments", self._ench_augments_card)):
+                          ("Augments", self._ench_augments_card),
+                          ("Soulwell", self._ench_soulwell_card)):
             card.setVisible(tab == key)
 
         # the filtered totals — the old top count tag ('OFFLINE · N

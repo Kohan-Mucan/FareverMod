@@ -21,8 +21,9 @@ from ..core.game_state import (GameState, TickReads, in_instance,
 from ..core.game_state import _instance_gate_line  # noqa: F401  (re-exported: tests import it through here)
 
 
-from .overlay_rules import (_at_training_dummy, hud_instance_only,
-                            hud_place_hidden, hud_rule_owns_showing)
+from .overlay_rules import (_at_training_dummy, hud_build_anywhere,
+                            hud_instance_only, hud_place_hidden,
+                            hud_rule_owns_showing)
 from .game_window import (_click_through_decision, _cursor_lock_state,
                           _cursor_visible, _foreground_state, _menu_gates,
                           _recenter_cursor, _should_center_mouse)
@@ -268,14 +269,23 @@ class OverlayRestoreMixin:
                                      self._pump_stagger)
 
     def _build_allowed_here(self, key: str) -> bool:
-        """Whether `key` may exist where the player is right now.
+        """Whether `key` may EXIST where the player is right now.
 
-        The same question the visibility loop asks, read off the same table, so
-        the two can never disagree about it. An unreadable scene answers "not
-        hidden" (the loop's own reading), which keeps a failed read from
-        silently starving a window of its build.
+        Usually the same question the visibility loop asks, read off the same
+        table, so the two cannot disagree about it. The deliberate exception is
+        a row that declares `build_anywhere`: its hidden ticks are load-bearing
+        (the Run Timer arms the zone-in edge while off screen), so it is built
+        wherever the player is and left to the loop to hide. Deciding it here
+        rather than in the caller is what keeps the one table authoritative —
+        "can this exist here" and "may this be seen here" are two answers, and
+        both are read off the row.
+
+        An unreadable scene answers "not hidden" (the loop's own reading),
+        which keeps a failed read from silently starving a window of its build.
         """
         m = self.model
+        if hud_build_anywhere(key):
+            return True                  # exists to work, not to be seen
         try:
             here_in_instance = in_instance(m)
         except Exception:
@@ -293,12 +303,17 @@ class OverlayRestoreMixin:
 
         The other producer of the stagger queue, and the half the locate
         restore cannot supply: that runs ONCE, so a window whose place is
-        INSTANCE (the Dungeon HUD, the Run Timer) is deliberately never built
-        while the player stands in the open world — and with no other builder,
-        nothing would ever create it on zone-in. Called from the manager's tick
-        with the SAME placement answers the visibility loop just read, it
-        queues at most one window per tick, through the same queue, so a zone
-        edge builds one HUD per tick instead of all of them at once.
+        INSTANCE (the Dungeon HUD) is deliberately never built while the player
+        stands in the open world — and with no other builder, nothing would
+        ever create it on zone-in. Called from the manager's tick with the SAME
+        placement answers the visibility loop just read, it queues at most one
+        window per tick, through the same queue, so a zone edge builds one HUD
+        per tick instead of all of them at once.
+
+        A row that declares `build_anywhere` is offered even where its place
+        hides it (see `_build_allowed_here`): the Run Timer's off-screen ticks
+        are the only witness of the outside half of the zone-in edge, so
+        waiting for zone-in to build it deletes the very evidence it needs.
 
         Gated on the user's own card setting, which is the only thing that
         means "I want this window": a key without a card row in HUD_PLACES
@@ -319,9 +334,10 @@ class OverlayRestoreMixin:
                 continue
             if self.overlays.get(key) is not None:
                 continue
-            if hud_place_hidden(self.s, key,
-                                in_instance=st.in_instance,
-                                at_dummy=at_dummy):
+            if not hud_build_anywhere(key) \
+                    and hud_place_hidden(self.s, key,
+                                         in_instance=st.in_instance,
+                                         at_dummy=at_dummy):
                 continue
             self._enqueue_staggered({key})
             return

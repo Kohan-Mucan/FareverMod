@@ -8,7 +8,6 @@ lives here because the panel imports it from the `..combat` hub.
 """
 from __future__ import annotations
 
-import json as _json
 import re
 from pathlib import Path
 
@@ -16,9 +15,14 @@ from PySide6 import QtWidgets
 
 from .. import theme
 from ...core.dps_tracker import CombatSession
-from ...core.dps_data import _session_from_dict
 from ...core.dps_tracker_history import remove_log_file
-from .history_index import write_log_summary
+from .history_index import cached_history_sessions, forget_cached_sessions
+from ...core import dps_archive
+from ...core.dps_archive import refresh_index
+
+
+def _archive_base_for(path: Path) -> Path:
+    return path.parent.parent
 
 
 def _clean_session_name(name: str) -> str:
@@ -34,19 +38,6 @@ _KIND_STYLE = {
     "dummy": (theme.ACCENT_LIGHT, "TEST DUMMY"),
     "overall": (theme.ACCENT, "OVERALL"),
 }
-
-
-def _rewrite_summary(path: Path, kept: list[dict]) -> None:
-    """Re-derive a log's sidecar after an edit, so its row keeps its aggregates.
-
-    A deletion changes the file, which invalidates the old sidecar by
-    fingerprint and would leave the row with no aggregate line until the next
-    archive. Best-effort: the log is the record, the sidecar is only its cache.
-    """
-    try:
-        write_log_summary(path, [_session_from_dict(d) for d in kept])
-    except Exception:
-        pass
 
 
 def delete_past_fight(parent_widget: QtWidgets.QWidget, path: str | Path, sess: CombatSession,
@@ -65,28 +56,28 @@ def delete_past_fight(parent_widget: QtWidgets.QWidget, path: str | Path, sess: 
         return False
 
     try:
-        raw = _json.loads(path.read_text(encoding="utf-8"))
+        sessions = dps_archive.read_sessions(path)
     except Exception:
         return False
-    hist = raw.get("history") or []
-    kept = [d for d in hist
-            if not (d.get("start_time") == sess.start_time
-                    and d.get("name") == sess.name)]
-    if len(kept) == len(hist):
-        kept = [d for d in hist if d.get("start_time") != sess.start_time]
+    kept = [s for s in sessions
+            if not (s.start_time == sess.start_time and s.name == sess.name)]
+    if len(kept) == len(sessions):
+        kept = [s for s in sessions if s.start_time != sess.start_time]
 
     if not kept:
-        # The log held nothing else: remove the file itself (and its sidecar,
-        # and any folder the removal empties) rather than leave an empty
-        # `{"history": []}` stub the list would keep showing as an empty row.
         remove_log_file(path)
+        if active_tracker and getattr(active_tracker, "_history_dir", None):
+            try:
+                refresh_index(Path(active_tracker._history_dir))
+            except Exception:
+                pass
     else:
         try:
-            from ...runtime.persist import atomic_write_json as _aw
-            _aw(path, {"history": kept})
+            dps_archive.write_sessions(path, kept)
+            refresh_index(_archive_base_for(path))
         except OSError:
             return False
-        _rewrite_summary(path, kept)
+        forget_cached_sessions(path)
 
     # Purge in-memory copies
     try:
@@ -141,25 +132,21 @@ def delete_past_fights_batch(parent_widget: QtWidgets.QWidget, items: list[tuple
 
     for path, sess_list in by_path.items():
         try:
-            raw = _json.loads(path.read_text(encoding="utf-8"))
+            sessions = dps_archive.read_sessions(path)
         except Exception:
             continue
-        hist = raw.get("history") or []
         delete_sigs = {(s.start_time, s.name) for s in sess_list}
-        kept = [d for d in hist
-                if (d.get("start_time"), d.get("name")) not in delete_sigs]
+        kept = [s for s in sessions
+                if (s.start_time, s.name) not in delete_sigs]
         if not kept:
-            # Last fight in this log: REMOVE the file (and its sidecar) instead
-            # of rewriting an empty stub — the exact reason a bulk delete used
-            # to leave "empty folders with the files still on the pc".
             remove_log_file(path)
         else:
             try:
-                from ...runtime.persist import atomic_write_json as _aw
-                _aw(path, {"history": kept})
+                dps_archive.write_sessions(path, kept)
+                refresh_index(_archive_base_for(path))
             except OSError:
                 continue
-            _rewrite_summary(path, kept)
+            forget_cached_sessions(path)
 
         # Purge in-memory copies
         try:

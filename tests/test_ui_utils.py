@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 from PySide6 import QtWidgets  # noqa: E402
-from PySide6.QtGui import QImage  # noqa: E402
+from PySide6.QtGui import QColor, QImage  # noqa: E402
 
 from farever_companion import paths  # noqa: E402
 from farever_companion.data import codex, icons, raw_data  # noqa: E402
@@ -316,6 +316,214 @@ def test_tile_trim_flag():
     full_plain = icons.tile("Units", "Nepsilon", 24, "#fbbf24", trim=False)
     full_trim = icons.tile("Units", "Nepsilon", 24, "#fbbf24", trim=True)
     assert _raw_bytes(full_trim) == _raw_bytes(full_plain)
+
+
+# --- the mount/glider id families resolve to a sheet that HAS the art ------
+def _sprite_pixels(pm, thr: int = 200) -> int:
+    """Pixels of a tile that can only come from a drawn SPRITE.
+
+    A `tile()` that found no art is still a painted square: its accent wash is
+    alpha 46 and its border 140, so nothing in a placeholder ever reaches 200.
+    Counting the high-alpha pixels is therefore the honest test for "the row
+    drew a picture", which is what the HUD user sees.
+    """
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    n = 0
+    for y in range(img.height()):
+        row = memoryview(img.constScanLine(y)).cast("B")
+        for x in range(img.width()):
+            if row[4 * x + 3] > thr:
+                n += 1
+    return n
+
+
+@_NEEDS_ATLAS
+def test_placeholder_tile_never_reaches_sprite_alpha():
+    """Calibration for the test below: an id with no art anywhere paints the
+    bare square and tops out below the sprite threshold, so a high-alpha pixel
+    really does mean a picture was drawn."""
+    assert _sprite_pixels(icons.tile("item", "NoSuchItem_ZZZ", 28, "#4ADE80")) == 0
+
+
+@_NEEDS_ATLAS
+def test_both_mount_id_shapes_resolve_to_the_collection_sheet():
+    """Two mount/glider id shapes are in the shipped sheets and they do NOT
+    share a shape: the ITEM family `Mount_Wolf_01` (underscore) and the mount
+    UNIT family the game spawns in the world, `MountWolf_01` / `MountGoat_03`
+    (no underscore — see `assets/data/unit.json`).
+
+    The family test used to require the underscore, so every unit-family mount
+    mapped to the gear sheet, which has no sprite for it, and its Entity HUD
+    row drew a bare placeholder square — both the loot rows and the companion
+    rows render their icon through this one resolver.
+    """
+    from farever_companion.data import atlas
+
+    for iid in ("Mount_Wolf_01", "Glider_Bat_Demon",      # the item family
+                "MountWolf_01", "MountGoat_03"):          # the unit family
+        assert icons.map_icon_sheet(iid) == "collection", iid
+        assert atlas.find_entry("collection", iid) is not None, iid
+
+
+@_NEEDS_ATLAS
+def test_every_mount_id_the_atlas_carries_draws_a_sprite():
+    """The whole family, walked out of the ATLAS rather than a hand list, so a
+    new mount id shape is a red test instead of a silently icon-less row.
+
+    For every sprite the sheets actually hold under a mount/glider name, the
+    resolver must name a sheet that owns it AND the tile must paint real art —
+    the placeholder square tops out below the sprite alpha, which is what the
+    HUD user saw instead of an icon.
+    """
+    from farever_companion.data import atlas
+
+    keys = {k for entries in atlas.data().values() for k in entries}
+    ids = sorted(k for k in keys if k.lower().startswith(("mount", "glider")))
+    assert len(ids) > 100, f"the mount/glider art is gone: {len(ids)} ids"
+
+    for iid in ids:
+        sheet = icons.map_icon_sheet(iid)
+        assert icons.has_icon(sheet, iid), f"{iid} -> {sheet!r} holds no art"
+        assert _sprite_pixels(icons.tile(sheet, iid, 28, "#4ADE80")) > 0, \
+            f"{iid} -> {sheet!r} drew the bare placeholder square"
+
+
+# --- the weapon rung mark: one tile for a weapon that drops at several rungs --
+def _band_samples(pm, count: int):
+    """The colour of each rung segment on the tile's top edge, read through
+    the same geometry `icons.rung_mark` paints with."""
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    size = img.width()
+    band = size / float(count)
+    return [img.pixelColor(int((i + 0.5) * band), 0)
+            for i in range(count)]
+
+
+def _nearest_rarity(color) -> str:
+    """Which rung a sampled pixel is closest to (a band is composited over the
+    tile's own wash, so it is never exactly the palette colour)."""
+    from farever_companion.ui import theme
+
+    best, dist = "", None
+    for rung in ("Rare", "Epic", "Legendary"):
+        want = QColor(theme.rarity_color(rung))
+        d = ((color.red() - want.red()) ** 2
+             + (color.green() - want.green()) ** 2
+             + (color.blue() - want.blue()) ** 2)
+        if dist is None or d < dist:
+            best, dist = rung, d
+    return best
+
+
+def _weapon_ids() -> list:
+    from farever_companion.data import items as idata
+
+    return [it["id"] for it in idata.items()
+            if idata.category(it.get("type")) == "Weapons"]
+
+
+def test_the_rung_mark_follows_what_the_game_can_hand_a_weapon_out_at():
+    """DERIVED, never a list: a weapon wears the mark exactly when a container
+    can hand that id out above its own rarity (`obtainable_tiers`)."""
+    from farever_companion.data import items as idata
+
+    weapons = _weapon_ids()
+    assert len(weapons) > 20, f"the weapon rows are gone: {len(weapons)}"
+    marked = sorted(w for w in weapons if icons.weapon_rungs(w))
+    reachable = sorted(w for w in weapons if len(idata.obtainable_tiers(w)) > 1)
+    assert marked == reachable
+    assert marked, "no weapon can come out above Rare: the mark is dead code"
+    for wid in marked:
+        assert icons.weapon_rungs(wid) == idata.obtainable_tiers(wid)
+
+
+def test_a_weapon_that_only_ever_drops_rare_keeps_the_plain_tile():
+    """Most of the catalog is Rare everywhere the game hands it out, so those
+    weapons must not grow a mark (nor a second colour)."""
+    from farever_companion.data import items as idata
+
+    rare_only = [w for w in _weapon_ids()
+                 if len(idata.obtainable_tiers(w)) == 1]
+    assert rare_only, "every weapon can now drop above Rare - check the data"
+    for wid in rare_only:
+        assert icons.weapon_rungs(wid) == (), wid
+
+
+def test_a_non_weapon_or_an_unknown_id_never_wears_the_mark():
+    from farever_companion.data import items as idata
+
+    non_weapon = next(it["id"] for it in idata.items()
+                      if idata.category(it.get("type")) != "Weapons")
+    for iid in (non_weapon, "NoSuchItem_ZZZ", ""):
+        assert icons.weapon_rungs(iid) == (), iid
+
+
+def test_the_mark_paints_one_flat_band_per_rung():
+    """One frame segment per rung, each a FLAT fill in that rung's FULL
+    colour on every edge: no gradient is drawn anywhere, which is what keeps
+    the extra paint cheap, and a 2px edge has no room for a tint to read on."""
+    from farever_companion.ui import theme
+
+    rungs = ("Rare", "Epic", "Legendary")
+    got = _band_samples(icons.rung_mark(64, rungs), len(rungs))
+    for cell, rung in zip(got, rungs):
+        want = QColor(theme.rarity_color(rung))
+        assert (cell.red(), cell.green(), cell.blue()) == (
+            want.red(), want.green(), want.blue()), (rung, cell.name())
+        assert cell.alpha() == 255, (rung, cell.alpha())
+
+
+def test_a_multi_rung_weapon_wears_its_bands_behind_its_art():
+    """The user-facing claim: the tile the app draws for such a weapon carries
+    all of its rungs on its frame — and the interior keeps the plain wash
+    under the sprite, so the piece's own art keeps its colours."""
+    from farever_companion.ui import theme
+
+    wid = next(w for w in _weapon_ids() if icons.weapon_rungs(w))
+    rungs = icons.weapon_rungs(wid)
+    accent = theme.rarity_color("Rare")
+    marked = icons.tile("item", wid, 64, accent)
+    plain = icons.tile("item", wid, 64, accent, rungs=())
+    assert marked.toImage() != plain.toImage(), "the frame never reached the tile"
+    left, _mid, right = _band_samples(marked, len(rungs))
+    assert _nearest_rarity(left) == rungs[0], left.name()
+    assert _nearest_rarity(right) == rungs[-1], right.name()
+
+
+def test_the_rungs_hook_marks_whatever_reading_the_caller_states():
+    """`rungs=` is how a caller that KNOWS the reading marks it — the Dungeons
+    tab's per-row tier switch reads a Rare-only boss weapon at Epic, and the
+    tile then says so."""
+    from farever_companion.ui import theme
+
+    accent = theme.rarity_color("Epic")
+    pm = icons.tile("item", "DA_Water", 64, accent, rungs=("Rare", "Epic"))
+    left, right = _band_samples(pm, 2)
+    assert _nearest_rarity(left) == "Rare"
+    assert _nearest_rarity(right) == "Epic"
+    # one rung is not a reading: a single value marks nothing
+    plain = icons.tile("item", "DA_Water", 64, accent, rungs=("Epic",))
+    assert plain.toImage() == icons.tile("item", "DA_Water", 64, accent,
+                                         rungs=()).toImage()
+
+
+def test_a_tile_without_rungs_has_no_mark():
+    """Control for the test above: the same code path on an item with no rungs
+    leaves the tile one flat wash, so a coloured band really is the mark."""
+    pm = icons.tile("item", "NoSuchItem_ZZZ", 64, "#4ADE80")
+    bands = _band_samples(pm, 3)
+    assert len({(c.red(), c.green(), c.blue()) for c in bands}) == 1, bands
+
+
+def test_the_mark_is_painted_once_and_cached():
+    """`tile` is lru_cached, so the mark rides the cache that already exists:
+    the same request hands back the same pixmap instead of repainting."""
+    from farever_companion.ui import theme
+
+    wid = next(w for w in _weapon_ids() if icons.weapon_rungs(w))
+    accent = theme.rarity_color("Rare")
+    assert icons.tile("item", wid, 32, accent) is icons.tile("item", wid, 32, accent)
+    assert icons.weapon_rungs(wid) is icons.weapon_rungs(wid)
 
 
 # --- launcher check: console-script shim classification -------------------
@@ -816,6 +1024,7 @@ def test_one_table_decides_where_each_hud_exists():
     differ now say why.
     """
     from farever_companion.ui.overlay_rules import (hud_allowed_places,
+                                                    hud_build_anywhere,
                                                     hud_instance_only,
                                                     hud_place_hidden,
                                                     hud_rule_owns_showing)
@@ -839,6 +1048,18 @@ def test_one_table_decides_where_each_hud_exists():
         assert hidden(key, s) is True
         assert hidden(key, s, dummy=True) is True
         assert hidden(key, s, inside=True) is False
+    # "may this be SEEN here" is not "must this EXIST here". The Run Timer
+    # declares the second: RUN starts on a proven outside -> inside edge and
+    # nothing else, so its HIDDEN ticks out in the world are the only witness
+    # of the outside half — drop it from the staggered build and the window is
+    # created on the very tick the edge has already passed, which is a clock
+    # that can never start. The Dungeon HUD's off-screen ticks do no work, so
+    # it keeps the ordinary drop-when-out-of-place rule.
+    assert hud_build_anywhere("speedrun") is True
+    assert hud_build_anywhere("dungeon") is False
+    assert hud_build_anywhere("dps") is False
+    assert hidden("speedrun", s) is True             # ...and it is still hidden
+
     s.open_overlay_dungeon = False                     # card off: never resurrected
     assert hidden("dungeon", s) is True
     assert hidden("dungeon", s, inside=True) is True
@@ -1641,6 +1862,129 @@ def test_codex_subview_history_back():
     destroy_panel(cp)
 
 
+def test_codex_npc_filter_lists_every_placed_npc():
+    """The Other tab's 'NPC' chip swaps the card grid for the placed-NPC list
+    (every npc/vendor/petshop placement), turns off the card-only chrome, and
+    leaves cleanly. This is the ONLY surface for the plain world NPCs: the
+    compiler used to drop those rows because nothing rendered them."""
+    from farever_companion.config import Settings
+    from farever_companion.ui.control_panel import ControlPanel
+    from farever_companion.ui.pages.codex.npc_list import NpcListView, npc_rows
+
+    cp = ControlPanel(Settings())
+    try:
+        cp._select_nav("codex")
+        # the panel is never shown offscreen, so a widget reports its own
+        # explicit visibility state through isHidden(), not isVisible()
+        cp._codex_tabs._btns["Other"].click()
+        QtWidgets.QApplication.processEvents()
+        assert cp._others_sub_bar.isHidden() is False
+        assert cp._others_sub_btns["NPC"].isHidden() is False
+
+        cp._others_sub_btns["NPC"].click()
+        QtWidgets.QApplication.processEvents()
+        view = cp._codex_npc_list
+        assert isinstance(view, NpcListView)
+        assert 0 < view.row_count < len(npc_rows())
+        # every placement is still reachable: the family rail is one at a time,
+        # so the five family buttons plus the debug listing together list the
+        # whole index - and this list is the only surface those rows have
+        # anywhere in the app
+        seen = set()
+        for family in ("vendor", "petshop", "mountshop", "npc", "haydn"):
+            view.show_family(family)
+            seen |= {r["id"] for r in view.shown_rows()}
+        view.toggle_debug()
+        seen |= {r["id"] for r in view.shown_rows()}
+        view.toggle_debug()
+        assert seen == {r["id"] for r in npc_rows()}
+        assert seen
+        # the table is sized to its own rows and owns no scrollbar: the
+        # codex grid already scrolls, so a nested bar would eat the wheel
+        from PySide6 import QtCore
+        assert view._table.rowCount() == view.row_count
+        assert view._table.columnCount() == 6
+        assert view._table.height() >= 30 * view.row_count
+        assert view._table.verticalScrollBarPolicy() == \
+            QtCore.Qt.ScrollBarAlwaysOff
+        # card-only chrome is off while the list is up
+        assert cp._btn_compact.isHidden() is True
+        assert cp._source_legend_frame.isHidden() is True
+
+        cp._others_sub_btns["All"].click()
+        QtWidgets.QApplication.processEvents()
+        assert getattr(cp, "_npc_list_mode", False) is False
+        assert cp._source_legend_frame.isHidden() is False
+
+        # leaving the tab drops the list; coming back lands on All, not NPC
+        cp._others_sub_btns["NPC"].click()
+        QtWidgets.QApplication.processEvents()
+        assert getattr(cp, "_npc_list_mode", False) is True
+        cp._codex_tabs.setCurrentText("Skover Island")
+        cp._codex_tab_changed(0)
+        QtWidgets.QApplication.processEvents()
+        assert getattr(cp, "_npc_list_mode", False) is False
+        assert cp._others_btn_group.checkedButton().text() == "All"
+    finally:
+        try:
+            cp.attach_ctl.stop()
+        except Exception:
+            pass
+        destroy_panel(cp)
+
+
+def test_codex_npc_rail_filters_survive_leaving_and_reopening_the_tab(moddata):
+    """The NPC directory's rail comes back the way it was left.
+
+    The chip REBUILDS the view every time it is activated (`_render_npc_list`),
+    so this is the wiring check: filter the rail, leave the Other tab, come back
+    and the same buttons are still lit and the same rows are still listed. The
+    state lives in settings.json through the same `s` + `hasattr` + `save()`
+    path `codex_compact` uses, which is why this runs on a redirected config dir.
+    """
+    from farever_companion.config import Settings
+    from farever_companion.ui.control_panel import ControlPanel
+
+    cp = ControlPanel(Settings())
+    try:
+        cp._select_nav("codex")
+        cp._codex_tabs._btns["Other"].click()
+        QtWidgets.QApplication.processEvents()
+        cp._others_sub_btns["NPC"].click()
+        QtWidgets.QApplication.processEvents()
+        view = cp._codex_npc_list
+        from farever_companion.ui.pages.codex.npc_list import npc_rows
+        rows = npc_rows()
+        # a family that still has placements outside Z1, so the filtered view
+        # still lists rows (the rail refuses to open onto a blank table)
+        family = next(
+            k for k in ("mountshop", "petshop", "npc", "vendor")
+            if any(r["role"] == k and r["zone_tag"] != "Z1" for r in rows))
+        view.rail_option("role", family).click()
+        view.rail_option("zone", "Z1").click()
+        left = {r["id"] for r in view.shown_rows()}
+        assert left == {r["id"] for r in rows
+                        if r["role"] == family and r["zone_tag"] != "Z1"}
+
+        cp._others_sub_btns["All"].click()
+        QtWidgets.QApplication.processEvents()
+        cp._others_sub_btns["NPC"].click()
+        QtWidgets.QApplication.processEvents()
+        again = cp._codex_npc_list
+        assert again is not view, "the chip rebuilds the list"
+        assert {r["id"] for r in again.shown_rows()} == left
+        assert again.family == family
+        assert again.rail_option("role", family).isChecked()
+        assert not again.rail_option("role", "vendor").isChecked()
+        assert not again.rail_option("zone", "Z1").isChecked()
+    finally:
+        try:
+            cp.attach_ctl.stop()
+        except Exception:
+            pass
+        destroy_panel(cp)
+
+
 def test_subtab_hops_record_history_and_back_returns_to_that_tab():
     """A sub-tab switch INSIDE a page is a navigation step: BACK returns to
     the tab you came from instead of jumping out of the page entirely.
@@ -1741,22 +2085,20 @@ def test_first_save_owns_the_file_so_a_later_close_still_persists(moddata):
 
 
 def test_the_combat_page_never_shows_a_rail_it_cannot_fit(monkeypatch, tmp_path):
-    """The page must either hold the whole rail or hide it — never clip it.
+    """The skills rail stays visible at every window width — never hidden.
 
-    This is the bug the user reported as "the Avg Hit column is cut off", and
-    it was invisible to every width test in the suite, because those built
-    `_build_combat_page()` on its own. The Combat page is inserted straight
-    into the QStackedWidget, so the page is sized to the stack; when the
-    stack is narrower than the roster's minimum plus the rail's, the rail
-    overflows and the page clips at its own edge. No scrollbar, no warning —
-    the tail of the table and the DMG TYPE bar above it just stop mid-number.
+    The rail used to auto-hide below a measured threshold so a narrow page
+    would not clip the skills table's tail (the bug first reported as "the
+    Avg Hit column is cut off"). Hiding the whole inspector to save the
+    table was the wrong trade — a missing rail reads as broken — so the rule
+    is now: the rail stays, and the narrow case scrolls horizontally inside
+    the skills table instead of clipping. This sweeps the same widths the
+    hide rule was pinned on and asserts the rail is up at every one of them,
+    including 1180px, where it used to vanish.
 
-    Two things are asserted because both went wrong in turn: the rail is
-    never shown in a page too narrow for it, and the threshold does not
-    depend on whether the rail is currently shown. The second is the subtle
-    one — `page.minimumSizeHint()` drops a hidden widget's contribution, so
-    measuring it that way makes hiding the rail argue for showing it again,
-    and the rail stutters on and off as the window crosses the boundary.
+    The measured threshold is still asserted stable: it is summed from the
+    panes rather than read off the page, so it must not move as the window
+    crosses it.
     """
     from farever_companion.config import Settings
     from farever_companion.ui.control_panel import ControlPanel
@@ -1780,16 +2122,12 @@ def test_the_combat_page_never_shows_a_rail_it_cannot_fit(monkeypatch, tmp_path)
                       1220, 1300, 1340, 1400, 1600, 1920, 1180, 1400):
             cp.resize(win_w, 860)
             spin(10)
-            need = cp._cp_rail_min_page_width
-            needs.add(need)
-            if cp._cp_rail_container.isHidden():
-                continue
-            assert page.width() >= need, (
-                f"at a {win_w}px window the rail is shown in a {page.width()}px "
-                f"page that needs {need}px — the overflow is clipped silently")
-        # One number, not two: if the threshold moved when the rail hid, the
-        # rail would flicker as the window crossed it.
-        assert len(needs) == 1, f"the threshold moved with the rail: {needs}"
+            needs.add(cp._cp_rail_min_page_width)
+            assert not cp._cp_rail_container.isHidden(), (
+                f"at a {win_w}px window the skills rail hid — it must stay")
+        # One number, not two: the threshold is summed from the panes, so it
+        # must not move with the window.
+        assert len(needs) == 1, f"the threshold moved with the window: {needs}"
     finally:
         drain_deleted()
         cp.close()
@@ -1798,19 +2136,12 @@ def test_the_combat_page_never_shows_a_rail_it_cannot_fit(monkeypatch, tmp_path)
 
 
 def test_a_live_combat_refresh_does_not_resurrect_the_hidden_rail():
-    """A 250ms refresh must not force the rail back on over a narrow page.
+    """A 250ms refresh keeps the always-on rail up, even on a narrow page.
 
-    This is the order-dependent half of the rail bug. `_render_combat_breakdown`
-    used to end every damage-view render with `_cp_rail_container.setVisible(
-    True)`, and `_refresh_combat_page_live` calls it AFTER the width fit that
-    just hid the rail — so whichever 250ms tick happened to land inside a
-    narrow window flickered the rail back on over the clipped table. That is
-    why the width test above passed in isolation (its sweep fits between ticks)
-    and failed in the full suite (a warmed-up process lets a tick in).
-
-    Driving the timer callback directly makes the trigger deterministic instead
-    of a race: the rail, hidden because the page is too narrow, must still be
-    hidden after both a bare render and a full live refresh.
+    The rail no longer hides for width (see the sweep test above), so the
+    live tick and the damage-view render must both leave it shown at 1180px —
+    the width where the old rule hid it. Driving the timer callback directly
+    makes the trigger deterministic instead of a race.
     """
     from farever_companion.config import Settings
     from farever_companion.ui.control_panel import ControlPanel
@@ -1828,23 +2159,23 @@ def test_a_live_combat_refresh_does_not_resurrect_the_hidden_rail():
         cp._select_nav("combat")
         spin()
         page = cp.stack.widget(cp._pages["combat"])
-        # Precondition: at this width the page genuinely cannot hold the rail.
+        # Precondition: at this width the page is narrower than the measured
+        # threshold — the exact case the old rule hid the rail for.
         cp._update_combat_rail_for_width()
         assert page.width() < cp._cp_rail_min_page_width
-        assert cp._cp_rail_container.isHidden(), \
-            "precondition: the rail should already be hidden at 1180px"
+        assert not cp._cp_rail_container.isHidden(), \
+            "precondition: the rail must stay up even at 1180px"
 
-        # The damage-view render was the force-show; it must now defer to the
-        # width rule.
+        # Neither the damage-view render nor the 250ms timer callback may
+        # hide it.
         cp._render_combat_breakdown()
-        assert cp._cp_rail_container.isHidden(), \
-            "a damage breakdown render re-showed the rail in a page that cannot fit it"
+        assert not cp._cp_rail_container.isHidden(), \
+            "a damage breakdown render hid the always-on rail"
 
-        # ...and so must the timer callback that renders every 250ms.
         cp._refresh_combat_page_live()
         assert page.width() < cp._cp_rail_min_page_width
-        assert cp._cp_rail_container.isHidden(), \
-            "the live refresh re-showed the rail in a page that cannot fit it"
+        assert not cp._cp_rail_container.isHidden(), \
+            "the live refresh hid the always-on rail"
     finally:
         drain_deleted()
         cp.close()
@@ -1886,7 +2217,8 @@ def test_closing_the_app_saves_the_fight_that_was_still_in_progress(moddata):
                               target_addr=BOSS, t=time.time()))
     tr.update()
     assert tr.boss_session.group_damage == 2500.0
-    assert not list(dps_dir.rglob("*.json")), "precondition: nothing on disk yet"
+    assert not [p for p in dps_dir.rglob("*.json*")
+                if p.name != "index.json"], "precondition: nothing on disk yet"
 
     cp = ControlPanel(Settings())
     try:
@@ -1898,10 +2230,10 @@ def test_closing_the_app_saves_the_fight_that_was_still_in_progress(moddata):
     finally:
         tr._history_dir = None
 
-    written = list(dps_dir.rglob("*.json"))
+    written = [p for p in dps_dir.rglob("*.json*") if p.name != "index.json"]
     assert written, "the in-progress fight was never written"
-    from farever_companion.core.dps_data import read_history_file
-    sessions = read_history_file(written[0])
+    from farever_companion.core import dps_archive
+    sessions = dps_archive.read_sessions(written[0])
     assert any(abs(s.group_damage - 2500.0) < 1e-6 for s in sessions), \
         f"the live fight's damage is not in the archive: {written[0]}"
     assert any("App Closed" in (s.name or "") for s in sessions), \

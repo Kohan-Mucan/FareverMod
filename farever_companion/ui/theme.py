@@ -88,9 +88,9 @@ def skill_color(skill_id: str) -> str:
 RARITY = {
     "Common": "#c2c6d0",
     "Uncommon": "#56d364",
-    "Rare": "#539bf5",
-    "Epic": "#c297ff",
-    "Legendary": "#f0a836",
+    "Rare": "#2f7de1",
+    "Epic": "#9d5cff",
+    "Legendary": "#f59e0b",
 }
 
 STAT_COLOR = {
@@ -137,8 +137,13 @@ KIND_COLOR = {
     "dungeon": "#7c3aed",    # dungeon entrances / teleporters
     "rift": "#a855f7",       # rift portals (neon purple)
     "soulstone": "#e879f9",  # soulstone summon points (click-to-spawn demon bosses)
-    "petshop": GOLD,          # pet shop vendors (Demon Huntress pet sellers)
-    "mountshop": GOLD,        # mount shop vendors (MountTamer NPCs)
+    # The three shop families get three colours, not one gold. The minimap's
+    # kiosk dots and the Codex NPC directory both colour a role from this table
+    # (`minimap_render.poi_pixmap` and `codex.npc_list._role_accent`), so it is
+    # the one place that decides whether a vendor, a pet shop and a mount shop
+    # read as three kinds or as one.
+    "petshop": GOOD,          # pet shop vendors (Demon Huntress pet sellers)
+    "mountshop": "#c297ff",   # mount shop vendors (MountTamer NPCs)
     "vendor": GOLD,           # generic shop vendor NPCs
     "pos": ACCENT,
     "mob": BROWN,

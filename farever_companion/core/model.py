@@ -1107,8 +1107,9 @@ class LiveModel:
         return None
 
     def dungeon_difficulty(self) -> int | None:
-        """0=Normal, 1=Hard, 2=Heroic from GameLayer.config, or None outside
-        an instance. Primary difficulty source; independent of enemy levels."""
+        """0=Normal, 1=Veteran, 2=Heroic from GameLayer.config, or None outside
+        an instance (rung 1's stored token is "hard"). Primary difficulty
+        source; independent of enemy levels."""
         try:
             return self.scene.difficulty(self.player_addr)
         except ProcError:
@@ -1170,8 +1171,9 @@ class LiveModel:
             return False
 
     def dungeon_mode(self) -> str | None:
-        """'normal' | 'hard' | 'heroic' for the current instance, or None
-        outside one / unreadable. Heroic wins over the plain difficulty int:
+        """'normal' | 'hard' | 'heroic' token for the current instance, or None
+        outside one / unreadable (the game words them Normal/Veteran/Heroic).
+        Heroic wins over the plain difficulty int:
         the layer flag (OFF_LAST_HEROIC) first, then difficulty==2 (the boxed
         config value read 2 on a live heroic run, 2026-09-20) as the fallback
         when the flag can't be read."""

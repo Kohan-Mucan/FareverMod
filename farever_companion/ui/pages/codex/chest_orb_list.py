@@ -113,7 +113,9 @@ def _sort_key(it: dict):
 class ChestOrbListCell(QtWidgets.QFrame):
     """One 2-column cell: orb/chest marker icon + label + zone sub-label."""
 
-    # right-click marks the chest/orb collected; keep the copy menu off it
+    # Right-click marks the chest/orb collected, so the copy menu skips it.
+    # Ctrl+right-click still reaches the menu (copy_menu's dev override), and
+    # the guard in mousePressEvent below keeps that gesture from marking done.
     _no_copy_menu = True
     pick = QtCore.Signal(object)  # item dict
 
@@ -177,6 +179,11 @@ class ChestOrbListCell(QtWidgets.QFrame):
         if e.button() == QtCore.Qt.LeftButton:
             self.pick.emit(self.item)
         elif e.button() == QtCore.Qt.RightButton:
+            if e.modifiers() & QtCore.Qt.ControlModifier:
+                # Ctrl+right-click belongs to the dev copy menu (copy_menu's
+                # override): asking "which file draws this row?" must not also
+                # mark the chest collected and make the row disappear.
+                return
             # Record as collected in the attached profile -> row disappears.
             self.ui._mark_chest_orb_done(self.item)
         super().mousePressEvent(e)

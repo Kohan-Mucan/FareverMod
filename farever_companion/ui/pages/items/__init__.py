@@ -17,6 +17,10 @@ stays under the project's 840-line UI budget:
              EnchantsPageBase: the Enchants tab (scrolls / gems / conversions,
              the heroic Infusion Patterns, the stat filter chip row, the
              upgrade cost matrix)
+- soulwell.py
+             SoulwellPanelMixin: the SOULWELL tab — the sacrifice station's
+             five slot faces, its per-gift numbers and the gift-count stepper
+             (static sheet rules; the Enchants strip owns when it shows)
 - loadout.py (+ loadout_weapons.py, loadout_collection.py)
              LoadoutMixin: the Loadout Builder & Mix-Match optimizer and its
              gear collection manager, weapon-slot half and item picker dialog
@@ -41,12 +45,14 @@ from .filters import ItemFiltersMixin
 from .detail import ItemDetailMixin
 from .farm import FarmMixin
 from .merchants import MerchantsMixin
+from .soulwell import SoulwellPanelMixin
 
 
 class ItemPageMixin(ItemPageBase, LoadoutMixin, EnchantsPageBase, ItemFiltersMixin,
-                    ItemListMixin, ItemDetailMixin, FarmMixin, MerchantsMixin):
+                    ItemListMixin, ItemDetailMixin, FarmMixin, MerchantsMixin,
+                    SoulwellPanelMixin):
     """Composed item page mixin (assembly + loadout + enchants + filters + list +
-    detail + gear farm + merchants)."""
+    detail + gear farm + merchants + soulwell)."""
 
 
 __all__ = ["ItemPageMixin"]

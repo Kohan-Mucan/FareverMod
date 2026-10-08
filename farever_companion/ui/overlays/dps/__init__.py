@@ -9,7 +9,7 @@
 
 Split out of `dps_overlay.py` when that file crossed the UI line budget; the
 old name is kept only in the commit history and in the retired
-`FareverPal.spec` hiddenimport, which named a module that stopped existing and
+`FareverMod.spec` hiddenimport, which named a module that stopped existing and
 now reads `farever_companion.ui.overlays.dps` - this package - because that is
 what `_OVERLAY_SOURCES["dps"]` imports. `overlay_manager` reaches it by runtime
 string, and the tests import `DpsOverlay` from here directly.

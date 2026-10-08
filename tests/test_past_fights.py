@@ -1,42 +1,96 @@
-"""The Past Fights panel is lazy: it lists log FILES built from their names and
-reads one only when a row is viewed (or its trash action is used), so opening a
-season of logs never parses every file.
+"""The Past Fights panel is lazy: it lists log FILES from the one index cache and
+reads a file only when a row is viewed (or its trash action is used), so opening
+a season of logs never parses every file.
 
 This is a UI contract, so it lives here rather than beside the tracker tests:
 `scan_history_dir` must stay read-free, and the panel must not touch a log until
 something the player did asks for it. The write side — deleting one fight or a
 batch — is covered here too.
+
+The layout is the clean one (see `core/dps_archive.py`): `<month>/<Boss>.json.gz`
+per boss, `<month>/trash.json.gz`, `<month>/dummy.json.gz`, and one
+`index.json` cache. Filenames carry no player/mode/outcome tokens — those are
+per-session facts read from the payload.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import time
 from pathlib import Path
 
+import pytest
+
 
 def _fight(kind="boss", name="King Ratsar", start=1000.0,
-           target="👑 King Ratsar", damage=500.0) -> dict:
+           target="👑 King Ratsar", damage=500.0, mode="",
+           boss_killed=True, boss_label=None) -> dict:
     return {
-        "name": name, "kind": kind, "boss_label": name,
+        "name": name, "kind": kind,
+        "boss_label": boss_label if boss_label is not None
+                      else (name if kind == "boss" else ""),
         "start_time": start, "end_time": start + 60.0, "state": "PAUSED",
-        "target_name": target,
-        "players": [{"name": "Kartik", "is_me": True,
+        "target_name": target, "mode": mode,
+        "boss_killed": boss_killed,
+        "players": [{"name": "Kartik Warrior A1b2 (You)", "is_me": True,
                      "hero_class": "Warrior", "total_damage": damage}],
         "timeline": {}, "deaths": [], "burst_peak": 0.0,
         "burst_peak_time": 0.0,
     }
 
 
-def _write_log(folder: Path, filename: str, fights) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    p = folder / filename
-    p.write_text(json.dumps({"history": list(fights)}), encoding="utf-8")
+def _archive_root(base: Path) -> Path:
+    """The archive root (where `index.json` lives) for a test path.
+
+    Files are written wherever the test points (`<tmp>/<YYYY-MM>` or the legacy
+    `<tmp>/<YYYY-MM>/<DD>`); the index always lives at the scan root, which is
+    the top of that tree. Walk up past a `YYYY-MM` month folder (and an optional
+    `DD` day folder) to it.
+    """
+    parts = base.parts
+    # Drop a trailing 2-digit day folder, then a trailing YYYY-MM month folder.
+    if len(parts) >= 2 and parts[-1].isdigit() and len(parts[-1]) == 2:
+        base = base.parent
+    if (len(base.parts) >= 2 and len(base.name) == 7 and base.name[4] == "-"
+            and base.name[:4].isdigit() and base.name[5:].isdigit()):
+        base = base.parent
+    return base
+
+
+def _write_archive(base: Path, filename: str, fights) -> Path:
+    """Write a gzipped archive file and rebuild the index cache at its root.
+
+    `base` may be a month or legacy `<month>/<DD>` path; the file lands inside
+    it and `index.json` is refreshed at the archive root above it.
+    """
+    from farever_companion.core import dps_archive
+
+    base.mkdir(parents=True, exist_ok=True)
+    p = base / filename
+    dps_archive.write_sessions(p, _sessions_from(fights))
+    dps_archive.refresh_index(_archive_root(base))
     return p
 
 
+
+def _sessions_from(fights):
+    from farever_companion.core.dps_data import _session_from_dict
+    return [_session_from_dict(f) for f in fights]
+
+
+# Backwards-friendly alias for the many call sites in this module.
+def _write_log(base: Path, filename: str, fights) -> Path:
+    return _write_archive(base, filename, fights)
+
+
 def _log_dir(base: Path, t: float | None = None) -> Path:
+    """The month folder a generic `_write_log` lands files in.
+
+    New layout has no `<DD>` day folder — a file's `day` comes from its
+    sessions' `start_time`, not the path — so this is just `<base>/<YYYY-MM>`.
+    """
     lt = time.localtime(t or time.time())
-    return base / time.strftime("%Y-%m", lt) / time.strftime("%d", lt)
+    return base / time.strftime("%Y-%m", lt)
 
 
 def _spy_reads(monkeypatch) -> list[Path]:
@@ -54,14 +108,15 @@ def _spy_reads(monkeypatch) -> list[Path]:
     return reads
 
 
+
 def test_scan_history_dir_reads_no_log_until_a_row_is_opened(tmp_path, monkeypatch):
-    """Listing a folder is a readdir and a stat per file — never a parse."""
+    """Listing the archive is a readdir and a stat per file — never a parse."""
     import farever_companion.ui.combat.history_index as hi
 
     day = _log_dir(tmp_path)
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    _write_log(day, "King Ratsar.json.gz",
                [_fight("boss"), _fight("boss", start=2000.0)])
-    _write_log(day, "trash_Kartik_Warrior_a1b2.json", [_fight("trash")])
+    _write_log(day, "trash.json.gz", [_fight("trash")])
     reads = _spy_reads(monkeypatch)
 
     rows = hi.scan_history_dir(tmp_path)
@@ -69,9 +124,9 @@ def test_scan_history_dir_reads_no_log_until_a_row_is_opened(tmp_path, monkeypat
     assert len(rows) == 2
 
     by_name = {r["path"].name: r for r in rows}
-    boss_row = by_name["King Ratsar_Kartik_Warrior_a1b2.json"]
-    trash_row = by_name["trash_Kartik_Warrior_a1b2.json"]
-    # the label is read off the NAME, not the contents
+    boss_row = by_name["King Ratsar.json.gz"]
+    trash_row = by_name["trash.json.gz"]
+    # kind/char come from the SESSIONS, surfaced in the index — never the name
     assert boss_row["kind"] == "boss"
     assert boss_row["boss"] == "King Ratsar"
     assert boss_row["char"] == "Kartik Warrior A1b2"
@@ -92,7 +147,7 @@ def test_load_history_sessions_is_the_explicit_on_demand_read(tmp_path):
     import farever_companion.ui.combat.history_index as hi
 
     day = _log_dir(tmp_path)
-    p = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    p = _write_log(day, "King Ratsar.json.gz",
                    [_fight("boss")])
     sessions = hi.load_history_sessions(p)
     assert len(sessions) == 1 and sessions[0].kind == "boss"
@@ -201,54 +256,61 @@ def _assert_tooltip_covers_row(tip: str, row_widget) -> None:
         assert text in tip, f"the row shows {text!r} but its tooltip is {tip!r}"
 
 
-def test_the_difficulty_token_is_read_off_the_log_name(tmp_path):
-    """A log written in a named instance carries its difficulty in the NAME —
+def test_the_mode_is_a_session_fact_surfaced_by_the_index(tmp_path):
+    """A log written in a named instance carries its mode on the SESSION —
     the list shows it, and the character label must not absorb it."""
     import farever_companion.ui.combat.history_index as hi
 
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2_HARD.json",
-               [_fight("trash")])
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "trash.json.gz",
+               [_fight("trash", mode="hard")])
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
 
     by_name = {r["path"].name: r for r in hi.scan_history_dir(tmp_path)}
-    hard = by_name["Trash pack King Ratsar_Kartik_Warrior_a1b2_HARD.json"]
+    hard = by_name["trash.json.gz"]
     assert hard["mode"] == "hard"
     assert hard["kind"] == "trash"
-    assert hard["boss"] == "King Ratsar"          # not the whole tail
+    assert hard["boss"] == "👑 King Ratsar"  # from boss_label, not the name
     assert hard["char"] == "Kartik Warrior A1b2"  # "Hard" is not a character
-    plain = by_name["King Ratsar_Kartik_Warrior_a1b2.json"]
+    plain = by_name["King Ratsar.json.gz"]
     assert plain["mode"] == ""
     assert plain["boss"] == "King Ratsar"
 
 
-def test_the_log_row_shows_the_difficulty_it_was_written_at(tmp_path, monkeypatch):
-    """The list badges a log from its name alone — no file is opened to say
-    which difficulty the run was."""
+def test_the_log_row_shows_the_mode_it_was_written_at(tmp_path, monkeypatch):
+    """The list badges a log from the index row alone — no file is opened to
+    say which mode the run was — and wears the game's word for the rung
+    (VETERAN), never the stored token."""
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2_HEROIC.json",
-               [_fight("trash")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "trash.json.gz",
+               [_fight("trash", mode="heroic")])
+    _write_log(day, "Veteran Ratsar.json.gz",
+               [_fight("boss", mode="hard")])
     reads = _spy_reads(monkeypatch)
     host._render_past_fights()
     assert reads == []
     texts = [w.text() for w in host.cp_content_container.findChildren(
         QtWidgets.QLabel)]
     assert "HEROIC" in texts
+    assert "VETERAN" in texts
+    assert "HARD" not in texts
 
 
-def test_the_fights_list_groups_logs_by_their_day_folder(tmp_path, monkeypatch):
+def test_the_fights_list_groups_logs_by_their_day(tmp_path, monkeypatch):
     """A list of fights is asked "which evening was that?", so the rows are
-    grouped by DATE — and the date comes off the archive FOLDER, not the
-    mtime, so a file restored or copied later still lands on its own day."""
+    grouped by DATE — and the date comes off the index row (the archive's own
+    `start_time`), not the mtime, so a file restored or copied later still
+    lands on its own day."""
     host = _fights_host(tmp_path, monkeypatch)
     d1 = tmp_path / "2026-10" / "01"
-    d2 = tmp_path / "2026-10" / "02"
-    _write_log(d1, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(d2, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
-               [_fight("trash")])
+    d2 = tmp_path / "2026-10"
+    _write_log(d1, "King Ratsar.json.gz",
+               [_fight("boss", start=time.mktime((2026, 10, 1, 20, 0, 0, 0, 0, -1)))])
+    _write_log(d2, "trash.json.gz",
+               [_fight("trash", start=time.mktime((2026, 10, 2, 20, 0, 0, 0, 0, -1)))])
 
     host._render_past_fights()
     labels = _day_labels(host)
@@ -264,10 +326,10 @@ def test_expanding_one_log_reads_only_that_log(tmp_path, monkeypatch):
     """The list is lazy per log: nothing is parsed until a row is expanded,
     and expanding one row reads exactly that file."""
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    a = _write_log(day, "King Ratsar.json.gz",
                    [_fight("boss"), _fight("boss", start=2000.0)])
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    _write_log(day, "trash.json.gz",
                [_fight("trash")])
     reads = _spy_reads(monkeypatch)
 
@@ -297,8 +359,8 @@ def test_a_rebuild_does_not_re_read_an_expanded_log(tmp_path, monkeypatch):
     file again to draw the very same rows (duration and damage and all).
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    a = _write_log(day, "King Ratsar.json.gz",
                    [_fight("boss")])
     reads = _spy_reads(monkeypatch)
 
@@ -318,8 +380,8 @@ def test_a_rebuild_does_not_re_read_an_expanded_log(tmp_path, monkeypatch):
 def test_a_rewritten_log_is_read_again(tmp_path, monkeypatch):
     """The cache is keyed by (path, mtime, size), so a changed log re-reads."""
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    name = "King Ratsar_Kartik_Warrior_a1b2.json"
+    day = tmp_path / "2026-10"
+    name = "King Ratsar.json.gz"
     a = _write_log(day, name, [_fight("boss")])
     reads = _spy_reads(monkeypatch)
 
@@ -350,8 +412,8 @@ def test_a_fight_rows_tooltip_repeats_what_the_row_shows(tmp_path, monkeypatch):
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    a = _write_log(day, "King Ratsar.json.gz",
                    [_fight("boss", damage=10636.0)])
     host._render_past_fights()
     entry = next(e for e in host._cp_log_rows if e["row"]["path"] == a)
@@ -372,11 +434,11 @@ def test_every_fights_view_row_agrees_with_its_tooltip(tmp_path, monkeypatch):
     from PySide6 import QtWidgets
 
     QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    day = tmp_path / "2026-10" / "02"
+    day = tmp_path / "2026-10"
     _write_log(day, "King Ratsar_Kartik_Warrior_a1b2_HARD.json",
                [_fight("boss", name="Boss Fight (Boss Defeated)",
                        damage=900.0)])
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    _write_log(day, "trash.json.gz",
                [_fight("trash")])
 
     # 1) the Combat & DPS fights list: collapsed log rows, then fight rows
@@ -399,9 +461,9 @@ def test_the_kind_filter_hides_fights_without_touching_other_logs(
     """A filter that hides rows must not pay for the logs it is hiding: only
     the expanded log is read, and only its matching fights are shown."""
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    a = _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "trash.json.gz",
                [_fight("trash")])
     reads = _spy_reads(monkeypatch)
 
@@ -424,9 +486,11 @@ def test_the_scanner_can_be_limited_to_one_day_folder(tmp_path):
     t1 = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
     t2 = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
     _write_log(_log_dir(tmp_path, t1),
-               "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+               "King Ratsar.json.gz",
+               [_fight("boss", start=t1)])
     wanted = _write_log(_log_dir(tmp_path, t2),
-                        "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                        "King Ratsar.json.gz",
+                        [_fight("boss", start=t2)])
     day2 = time.strftime("%Y-%m-%d", time.localtime(t2))
 
     rows = hi.scan_history_dir(tmp_path, day=day2)
@@ -443,9 +507,11 @@ def test_the_day_filter_parses_only_that_days_logs(tmp_path, monkeypatch):
     t1 = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
     t2 = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
     old = _write_log(_log_dir(tmp_path, t1),
-                     "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                     "Old King.json.gz",
+                     [_fight("boss", name="Old King", start=t1)])
     new = _write_log(_log_dir(tmp_path, t2),
-                     "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                     "New King.json.gz",
+                     [_fight("boss", name="New King", start=t2)])
     day2 = time.strftime("%Y-%m-%d", time.localtime(t2))
     reads = _spy_reads(monkeypatch)
 
@@ -469,10 +535,11 @@ def test_the_encounter_combo_source_is_today_only(tmp_path, monkeypatch):
 
     t_old = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
     old = _write_log(_log_dir(tmp_path, t_old),
-                     "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                     "King Ratsar.json.gz", [_fight("boss", start=t_old)])
+    now = time.time()
     today_file = _write_log(_log_dir(tmp_path),
-                            "King Ratsar_Kartik_Warrior_a1b2.json",
-                            [_fight("boss", start=4242.0)])
+                            "King Ratsar.json.gz",
+                            [_fight("boss", start=now)])
     monkeypatch.setattr(ch, "dps_dir", lambda: tmp_path)
     reads = _spy_reads(monkeypatch)
 
@@ -482,45 +549,40 @@ def test_the_encounter_combo_source_is_today_only(tmp_path, monkeypatch):
     label, sessions = ch.CombatHistoryMixin._history_source(_Stub(), None)
 
     assert label == "All Fights"
-    assert [s.start_time for s in sessions] == [4242.0]
+    assert [s.start_time for s in sessions] == pytest.approx([now])
     assert reads == [today_file], "the cold-start source parsed an older day"
     assert old not in reads
 
 
-def test_a_trash_row_reads_the_dungeon_and_boss_apart_from_the_name(tmp_path):
-    """The writer names a named pull `Trash pack <Dungeon> - <Boss>_<slug>`.
+def test_a_trash_row_names_its_boss_from_the_sessions(tmp_path):
+    """A trash pull's row says which boss it ran to, read off the SESSIONS.
 
-    Read off the NAME without opening the log, `boss` must be just the boss and
-    `dungeon` the instance: it used to glue them together, so the row's target
-    line drew the dungeon and boss as one name and `dungeon` was empty.
+    The old layout glued `<Dungeon> - <Boss>` into the FILENAME and parsed it
+    back out. The clean layout carries the boss on each trash session
+    (`boss_label`); the index surfaces it without opening the log, and the
+    dungeon is no longer a tracked fact (there is no dungeon field anywhere).
     """
     import farever_companion.ui.combat.history_index as hi
 
-    day = tmp_path / "2026-10" / "02"
-    # the current name, and a pre-2026-10-04 file that must read identically
-    _write_log(day,
-               "Kobolds Mines - Reblochonk trash_Kartik_Warrior_a1b2.json",
-               [_fight("trash")])
-    _write_log(day,
-               "Trash pack Kobolds Mines - Reblochonk_Kartik_Warrior_a1b2.json",
-               [_fight("trash")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "trash.json.gz",
+               [_fight("trash", boss_label="Reblochonk",
+                       target="Reblochonk")])
 
     rows = [r for r in hi.scan_history_dir(tmp_path) if r["kind"] == "trash"]
-    assert len(rows) == 2, "both the new and the legacy name must read as trash"
-    for row in rows:
-        assert row["boss"] == "Reblochonk"
-        assert row["dungeon"] == "Kobolds Mines"
-        assert row["char"] == "Kartik Warrior A1b2"
-        # the display label reads "<Boss> trash", the marker after the boss
-        assert row["name"] == "Kobolds Mines - Reblochonk trash"
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["boss"] == "Reblochonk"
+    assert row["dungeon"] == ""
+    assert row["char"] == "Kartik Warrior A1b2"
+    assert row["name"] == "Trash pulls"
 
 
 # --- the per-log sidecar: the collapsed row and the records are read-free ----
 
-def _write_sidecar(path) -> None:
-    """Convert one log to a sidecar, the way archive time (or a backfill) does."""
-    import farever_companion.ui.combat.history_index as hi
-    hi.write_log_summary(path, hi.load_history_sessions(path))
+def _FIXME_sidecar_anchor(path) -> None:
+    """Deleted."""
+    raise AssertionError("sidecar helper removed")
 
 
 def test_the_collapsed_log_row_shows_aggregates_without_reading_the_log(
@@ -535,15 +597,14 @@ def test_the_collapsed_log_row_shows_aggregates_without_reading_the_log(
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    a = _write_log(day, "King Ratsar.json.gz",
                    [_fight("boss"), _fight("boss", start=2000.0,
                                            damage=9000.0)])
-    _write_sidecar(a)
     reads = _spy_reads(monkeypatch)
 
     host._render_past_fights()
-    assert reads == [], "the collapsed row parsed a log it had a sidecar for"
+    assert reads == [], "the collapsed row parsed a log it had a row for"
     texts = [w.text() for w in host.cp_content_container.findChildren(
         QtWidgets.QLabel)]
     agg = next((t for t in texts if t.startswith("2 fights")), None)
@@ -552,29 +613,6 @@ def test_the_collapsed_log_row_shows_aggregates_without_reading_the_log(
 
     for w in _visible_log_rows(host):
         _assert_tooltip_covers_row(w.toolTip(), w)
-
-
-def test_a_log_without_a_sidecar_shows_no_aggregate_and_is_not_read(
-        tmp_path, monkeypatch):
-    """A missing sidecar is advisory: the row omits the line rather than reads.
-
-    Legacy logs have no sidecar until an explicit action converts them, so the
-    collapsed list must treat \"no sidecar\" as \"nothing to say\" — never as a
-    reason to parse every legacy log on the GUI thread, which is the freeze the
-    lazy index exists to prevent.
-    """
-    from PySide6 import QtWidgets
-
-    host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    reads = _spy_reads(monkeypatch)
-
-    host._render_past_fights()
-    assert reads == []
-    texts = [w.text() for w in host.cp_content_container.findChildren(
-        QtWidgets.QLabel)]
-    assert not any("fight" in t and "DMG" in t for t in texts), texts
 
 
 def test_the_batch_bar_is_frozen_above_the_scrolling_list(tmp_path, monkeypatch):
@@ -589,8 +627,8 @@ def test_the_batch_bar_is_frozen_above_the_scrolling_list(tmp_path, monkeypatch)
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    log = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    log = _write_log(day, "King Ratsar.json.gz",
                      [_fight("boss")])
     host._render_past_fights()
 
@@ -634,9 +672,9 @@ def test_the_body_stacks_from_the_top_instead_of_floating_apart(
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(day, "Queen Vex_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "Queen Vex.json.gz",
                [_fight("boss", name="Queen Vex")])
 
     def spacers():
@@ -726,8 +764,8 @@ def test_the_kind_filter_chips_act_as_a_radio_group(tmp_path, monkeypatch):
     group: whichever kind is in force is the one shown checked.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
     host._render_past_fights()
 
     def chips():
@@ -774,12 +812,6 @@ def _holder_text(entry):
             and lay.itemAt(i).widget().text()]
 
 
-def _write_sidecar(p):
-    """Write the log's real sidecar, through the writer the tracker uses."""
-    import farever_companion.ui.combat.history_index as hi
-    return hi.write_log_summary(p, hi.load_history_sessions(p))
-
-
 def test_a_filter_tells_the_row_what_it_will_find_without_reading_a_log(
         tmp_path, monkeypatch):
     """The row answers "is there anything in here for me?" BEFORE it is opened.
@@ -790,10 +822,10 @@ def test_a_filter_tells_the_row_what_it_will_find_without_reading_a_log(
     name and the sidecar are already on the row.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
     reads = _spy_reads(monkeypatch)
 
@@ -817,22 +849,24 @@ def test_a_filter_tells_the_row_what_it_will_find_without_reading_a_log(
 
 
 def test_a_boss_log_under_failed_is_never_ruled_out(tmp_path, monkeypatch):
-    """Only a name that cannot BE a failure is ruled out.
+    """Only a log that cannot BE a failure is ruled out.
 
-    `summarize` counts only fights that dealt damage, so a boss log whose sidecar
-    reports no failure can still hold a wipe with nothing on the board. Failed
-    therefore never says "no Failed" to a boss log; a trash log it does.
+    `summarize` counts only fights that dealt damage, so a boss log whose
+    index row reports no failure can still hold a wipe with nothing on the
+    board. Failed therefore never says "no Failed" to a boss log; a trash
+    log it does.
     """
     from farever_companion.ui import theme
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss",
                              name="Boss Fight (Boss Defeated)")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
-    _write_sidecar(boss)                    # a KILL: fights=1, has_failure=False
+    # a KILL archives as fights=1, has_failure=False — no refresh needed,
+    # `_write_log` already rebuilt the index
 
     host._cp_fights_filter = "failed"
     _reveal_folded(host)          # the trash row folds; it has to be readable
@@ -847,51 +881,26 @@ def test_a_boss_log_under_failed_is_never_ruled_out(tmp_path, monkeypatch):
     assert theme.DIM in t_entry["chev"].styleSheet()
 
 
-def test_an_empty_log_is_listed_as_empty_rather_than_as_an_ordinary_row(
-        tmp_path, monkeypatch):
-    """A log its own sidecar counted no fight in says so on the row.
-
-    RC3: an empty log used to be listed like any other, revealed itself only when
-    expanded, and silently lost its aggregate line - which read as data loss
-    rather than as an empty log.
-    """
-    host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    empty = _write_log(day, "Boss_Kartik_Warrior_a1b2.json", [])
-    _write_sidecar(empty)                   # summarize([]) -> fights 0
-
-    host._render_past_fights()
-    entry, row = _log_row(host, empty)
-    assert entry["verdict"] == "empty"
-    labels = _row_labels(row)
-    assert "empty log" in labels
-    assert "no fights recorded" in labels
-    host._toggle_log_row(entry)             # it still explains itself
-    assert _holder_text(entry) == ["(no readable fights in this log)"]
-
-
-
 
 
 def test_every_collapsed_row_always_draws_its_aggregate_line(
         tmp_path, monkeypatch):
-    """The aggregate slot is drawn even when the sidecar has not been written.
+    """The collapsed row always has its aggregate line — the index row is the
+    sidecar now, written at archive time for every log.
 
     A row that silently DROPPED the line read as a row that lost its data - the
-    other half of "this list looks broken" - so a log with no sidecar says
-    `no summary yet` in the slot instead of drawing nothing at all.
+    other half of "this list looks broken".
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    bare = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    bare = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    counted = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    counted = _write_log(day, "trash.json.gz",
                          [_fight("trash")])
-    _write_sidecar(counted)
 
     host._render_past_fights()
     _e, row = _log_row(host, bare)
-    assert "no summary yet" in _row_labels(row)
+    assert any(t.startswith("1 fight") for t in _row_labels(row))
     _e2, row2 = _log_row(host, counted)
     assert any(t.startswith("1 fight") for t in _row_labels(row2))
 
@@ -912,11 +921,11 @@ def test_expanding_any_log_under_any_filter_never_leaves_a_blank_holder(
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "trash.json.gz",
                [_fight("trash")])
-    _write_log(day, "Boss_Kartik_Warrior_a1b2.json", [])
+    _write_log(day, "Boss.json.gz", [])
 
     for filt in ("all", "boss", "trash", "dummy", "failed"):
         host._cp_fights_filter = filt
@@ -946,10 +955,10 @@ def test_the_filter_line_is_per_row_and_no_neighbour_can_hide_it(
     cannot change what any of them shows.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
     host._cp_fights_filter = "trash"
     _reveal_folded(host)          # both rows must be drawable to compare them
@@ -977,20 +986,19 @@ def test_a_filtered_list_folds_the_rows_it_has_nothing_for(tmp_path, monkeypatch
     "nothing here". Those rows are now one line for the day they were in.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
-    empty = _write_log(day, "Boss_Kartik_Warrior_a1b2.json", [])
-    _write_sidecar(empty)                   # an empty log, not a chopped one
+    # an empty log is not indexed at all (no fights = no row)
 
     host._cp_fights_filter = "trash"
     host._render_past_fights(force=True)
 
     drawn = _drawn_paths(host)
     assert boss not in drawn, "a row the filter has nothing for was drawn"
-    assert {trash, empty} <= drawn, drawn
+    assert {trash} <= drawn, drawn
     folds = _fold_rows(host)
     assert len(folds) == 1, [f.text() for f in folds]
     assert folds[0].text() == "1 log with no Trash  ·  show"
@@ -1011,10 +1019,10 @@ def test_the_fold_reveals_on_click_and_outlives_the_rebuilds(
     every tick.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
 
     host._cp_fights_filter = "trash"
@@ -1050,9 +1058,9 @@ def test_the_fold_never_hides_a_row_the_name_cannot_answer(
     filters nothing at all, so it folds nothing either.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "trash.json.gz",
                [_fight("trash")])
 
     for filt in ("all", "dummy"):
@@ -1069,23 +1077,6 @@ def test_the_fold_never_hides_a_row_the_name_cannot_answer(
     assert _fold_rows(host)[0].text() == "1 log with no Failed  ·  show"
 
 
-def test_an_empty_log_is_never_folded_by_a_kind_filter(tmp_path, monkeypatch):
-    """An empty log is a fact about the LOG, not about the filter.
-
-    It says so on its row under every filter, and it is what a cleanup would act
-    on - folding it into a kind filter's "no Trash" line would bury it.
-    """
-    host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    empty = _write_log(day, "Boss_Kartik_Warrior_a1b2.json", [])
-    _write_sidecar(empty)
-
-    host._cp_fights_filter = "trash"
-    host._render_past_fights(force=True)
-    assert _drawn_paths(host) == {empty}
-    assert _fold_rows(host) == []
-
-
 def test_a_day_whose_logs_all_fold_keeps_its_header(tmp_path, monkeypatch):
     """The fold is per DAY: a heading over nothing is what it must not leave.
 
@@ -1093,11 +1084,13 @@ def test_a_day_whose_logs_all_fold_keeps_its_header(tmp_path, monkeypatch):
     or strand it, so each day folds its own rows and keeps its date and count.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    quiet = tmp_path / "2026-10" / "02"          # nothing for the Trash filter
-    busy = tmp_path / "2026-10" / "03"           # one matching log
-    _write_log(quiet, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(busy, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
-               [_fight("trash")])
+    quiet = tmp_path / "2026-10"          # nothing for the Trash filter
+    busy = tmp_path / "2026-10"           # one matching log
+    t_q = time.mktime((2026, 10, 1, 12, 0, 0, 0, 0, -1))
+    t_b = time.mktime((2026, 10, 2, 12, 0, 0, 0, 0, -1))
+    _write_log(quiet, "King Ratsar.json.gz", [_fight("boss", start=t_q)])
+    _write_log(busy, "trash.json.gz",
+               [_fight("trash", start=t_b)])
 
     host._cp_fights_filter = "trash"
     host._render_past_fights(force=True)
@@ -1109,10 +1102,10 @@ def test_a_day_whose_logs_all_fold_keeps_its_header(tmp_path, monkeypatch):
 def test_a_new_filter_starts_folded_again(tmp_path, monkeypatch):
     """The reveal was a decision about the filter that hid those rows."""
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz",
                       [_fight("boss")])
-    trash = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
+    trash = _write_log(day, "trash.json.gz",
                        [_fight("trash")])
 
     host._cp_fights_filter = "trash"
@@ -1136,17 +1129,14 @@ def test_a_day_header_names_how_many_logs_the_day_holds(tmp_path, monkeypatch):
     the plain log count it replaces.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    b = _write_log(day, "Trash pack King Ratsar_Kartik_Warrior_a1b2.json",
-                   [_fight("trash")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "trash.json.gz",
+               [_fight("trash")])
 
     host._render_past_fights()
-    assert "2 logs" in _day_labels(host), _day_labels(host)   # no sidecars yet
-    _write_sidecar(a)
-    _write_sidecar(b)
-    host._render_past_fights(force=True)
     shown = _day_labels(host)
+    # the index row carries the summary, so the header reads the fights at once
     assert any(t == "2 logs · 2 fights" for t in shown), shown
 
 
@@ -1170,7 +1160,7 @@ def _day_labels(host):
 def _season(tmp_path, days):
     for day in days:
         _write_log(tmp_path / "2026-10" / day[-2:],
-                   "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                   "King Ratsar.json.gz", [_fight("boss")])
 
 
 def test_the_fights_list_shows_only_the_most_recent_days(tmp_path, monkeypatch):
@@ -1276,115 +1266,6 @@ def test_the_day_window_follows_the_user_setting(tmp_path, monkeypatch):
         "a show-all toggle survived over an already-open window"
 
 
-def _spy_sidecar_reads(monkeypatch) -> list:
-    """Record every SIDECAR read the scan performs (logs are spied separately)."""
-    import farever_companion.ui.combat.history_index as hi
-
-    reads: list = []
-    real = hi.read_log_summary
-
-    def spy(path, mtime, size):
-        reads.append(Path(path))
-        return real(path, mtime, size)
-
-    monkeypatch.setattr(hi, "read_log_summary", spy)
-    return reads
-
-
-def test_a_repeat_scan_of_an_unchanged_folder_reads_no_sidecar(
-        tmp_path, monkeypatch):
-    """Re-opening the Fights list must cost metadata, not reads.
-
-    The first open describes the visible days and reads their sidecars; the
-    second finds nothing has moved, so it reads none. This is the cache's whole
-    contract — the folder is untouched and a stale aggregate line is worse than
-    a slow list.
-    """
-    import farever_companion.ui.combat.history_index as hi
-
-    day = tmp_path / "2026-10" / "02"
-    a = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    c = _write_log(day, "King Ratsar_Koban_Rogue_a1b2.json", [_fight("boss")])
-    _write_sidecar(a)
-
-    # The cold scan probes only `c`: `a`'s sidecar was written through
-    # `write_log_summary`, which records what it just wrote, so the scan does
-    # not re-read a file this process already holds. `c` has no sidecar and
-    # must still be probed (and reads as None).
-    first = _spy_sidecar_reads(monkeypatch)
-    rows = hi.scan_history_dir(tmp_path)
-    assert set(first) == {c}, "the cold scan must probe what it does not hold"
-    by_path = {r["path"]: r for r in rows}
-    assert by_path[a]["summary"], "the sidecar just written was not surfaced"
-    assert by_path[c]["summary"] is None, "a log with no sidecar claimed one"
-
-    second = _spy_sidecar_reads(monkeypatch)
-    globs = _spy_globs(monkeypatch)
-    rows = hi.scan_history_dir(tmp_path)
-    assert len(rows) == 2, "the repeat scan dropped a log"
-    assert second == [], "an unchanged folder was read again"
-    # The day-level cache still removes the expensive work on a repeat open: no
-    # glob, no descriptor rebuild, no sidecar read. It does NOT skip the readdir
-    # itself — freshness is the folder's entry signature (`os.scandir`), because
-    # a directory mtime is updated lazily on Windows and cannot be trusted to
-    # move when a log is added (see `history_cache` and
-    # test_history_scan_labels_per_boss_files_with_the_character).
-    assert day not in globs, "an unchanged day folder was globbed again"
-
-    # ...and the cache still answers a CHANGE. A new log in a cached day is
-    # found, and it costs ONE sidecar probe: the two logs already described keep
-    # theirs, keyed by their own unchanged fingerprint. `b` deliberately gets no
-    # sidecar file, so the probe is the observable cost (it reads as None).
-    b = _write_log(day, "King Ratsar_Sw2_Mage_c3d4.json", [_fight("boss")])
-    third = _spy_sidecar_reads(monkeypatch)
-    rows = hi.scan_history_dir(tmp_path)
-    assert len({r["path"] for r in rows}) == 3, "a log added to a cached day "\
-        "was not seen"
-    assert third == [b], "adding one log re-read the whole day"
-
-
-def test_a_log_added_to_a_cached_day_is_seen_even_when_the_folder_mtime_never_moves(
-        tmp_path, monkeypatch):
-    """The day cache must key on the ENTRY LIST, not the folder's mtime.
-
-    Windows updates a directory's mtime lazily — measured on the dev box, 141 of
-    200 file creations left it untouched — so a cache that trusts the mtime
-    reuses a day's rows after a new log lands in it and the fight never appears
-    in the Fights list. The first version of `history_cache` had exactly that
-    bug. This freezes every directory mtime (what the lazy filesystem looks
-    like) and asserts the added log is still found: it would fail against the
-    mtime-keyed cache and passes against the entry-signature one.
-    """
-    import farever_companion.ui.combat.history_cache as hc
-    import farever_companion.ui.combat.history_index as hi
-
-    monkeypatch.setattr(hc, "_dir_mtime", lambda _p: 12345.0)
-    hc.forget_day_cache()
-
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    assert len(hi.scan_history_dir(tmp_path)) == 1
-
-    _write_log(day, "King Ratsar_Koban_Rogue_a1b2.json", [_fight("boss")])
-    rows = hi.scan_history_dir(tmp_path)
-    assert len({r["path"] for r in rows}) == 2, (
-        "a log added to a cached day was missed because the folder mtime did "
-        "not move")
-
-
-def _spy_globs(monkeypatch) -> list:
-    """Record every directory LISTED by the scan (a glob is a readdir)."""
-    globs: list = []
-    real = Path.glob
-
-    def spy(self, pattern):
-        globs.append(self)
-        return real(self, pattern)
-
-    monkeypatch.setattr(Path, "glob", spy)
-    return globs
-
-
 def test_history_days_lists_day_folders_newest_first_without_stats(tmp_path):
     """The cheap half of the scan: day folders by name, no file described.
 
@@ -1397,9 +1278,9 @@ def test_history_days_lists_day_folders_newest_first_without_stats(tmp_path):
     t1 = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
     t2 = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
     _write_log(_log_dir(tmp_path, t1),
-               "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+               "Day One.json.gz", [_fight("boss", name="Day One", start=t1)])
     _write_log(_log_dir(tmp_path, t2),
-               "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+               "Day Two.json.gz", [_fight("boss", name="Day Two", start=t2)])
     (tmp_path / "2026-01" / "04").mkdir(parents=True)      # empty day folder
 
     d1 = time.strftime("%Y-%m-%d", time.localtime(t1))
@@ -1414,27 +1295,23 @@ def test_the_day_window_scan_describes_only_the_kept_days(tmp_path, monkeypatch)
     stamp is checked BEFORE `_file_descriptor`, so an out-of-window log is never
     stat-ed and its sidecar is never opened.
     """
-    from pathlib import Path
     import farever_companion.ui.combat.history_index as hi
 
     t1 = time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1))
     t2 = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))
     old = _write_log(_log_dir(tmp_path, t1),
-                     "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                     "Old King.json.gz",
+                     [_fight("boss", name="Old King", start=t1)])
     new = _write_log(_log_dir(tmp_path, t2),
-                     "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+                     "New King.json.gz",
+                     [_fight("boss", name="New King", start=t2)])
     day2 = time.strftime("%Y-%m-%d", time.localtime(t2))
 
-    seen: list[Path] = []
-    real = hi.read_log_summary
-    monkeypatch.setattr(
-        hi, "read_log_summary",
-        lambda p, m, s: (seen.append(Path(p)), real(p, m, s))[1])
-
+    reads = _spy_reads(monkeypatch)
     rows = hi.scan_history_dir(tmp_path, days={day2})
     assert [r["path"] for r in rows] == [new]
-    assert seen == [new], "the windowed scan paid for a hidden day's log"
-    assert old not in seen
+    assert reads == [], "the windowed scan parsed a log"
+    assert old not in reads
 
 
 def test_an_old_layout_day_folder_is_carried_by_the_window(tmp_path):
@@ -1448,7 +1325,7 @@ def test_an_old_layout_day_folder_is_carried_by_the_window(tmp_path):
     import farever_companion.ui.combat.history_index as hi
 
     _write_log(tmp_path / "2026-01-02",
-               "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+               "King Ratsar.json.gz", [_fight("boss")])
 
     assert [r["day"] for r in hi.scan_history_dir(tmp_path)] == ["2026-01-02"]
     assert [r["day"] for r in hi.scan_history_dir(
@@ -1457,56 +1334,39 @@ def test_an_old_layout_day_folder_is_carried_by_the_window(tmp_path):
     assert hi.history_days(tmp_path) == ["2026-01-02"]
 
 
-# --- the Fights search box: read-free, name + sidecar only -------------------
+# --- the Fights search box: read-free, name/boss/char only -------------------
 
-def _fight_killed(**kw):
-    d = _fight(**kw)
-    d["boss_killed"] = True
-    return d
-
-
-def test_the_search_matches_name_fields_and_sidecar_failure_without_parsing(
-        tmp_path, monkeypatch):
+def test_the_search_matches_index_fields_without_parsing(tmp_path, monkeypatch):
     """A keystroke must not undo the lazy index.
 
-    The character, boss and dungeon are read off the file NAME by the scan; the
-    failure state is read off the per-log SIDECAR. Nothing is parsed — a log
-    with no sidecar has no failure state to match, which is why the last boss
-    (failed too, but without a sidecar) drops out of a "failed" search.
+    The filter matches the row's own index fields (name / boss / character) and
+    never parses a log: the whole list stays lazy while the box narrows a season.
     """
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    boss = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    pulls = _write_log(
-        day, "Kobolds Mines - Reblochonk trash_Kartik_Warrior_a1b2.json",
-        [_fight("trash")])
-    killed = _write_log(day, "King Ratsar_Alara_Mage_c3d4.json",
-                        [_fight_killed(damage=700.0)])
-    noside = _write_log(day, "Ice Queen_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    for p in (boss, pulls, killed):
-        _write_sidecar(p)                 # noside deliberately has none
+    day = tmp_path / "2026-10"
+    boss = _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    pulls = _write_log(day, "trash.json.gz",
+                       [_fight("trash", boss_label="Reblochonk",
+                               target="Reblochonk")])
+    ice = _write_log(day, "Ice Queen.json.gz",
+                     [_fight("boss", name="Ice Queen")])
     reads = _spy_reads(monkeypatch)
 
     def shown(q):
         host._cp_fights_query = q
         host._render_past_fights(force=True)
-        return [e["row"]["path"] for e in host._cp_log_rows]
+        return sorted(e["row"]["path"] for e in host._cp_log_rows)
 
-    assert sorted(shown("kobolds")) == [pulls]           # dungeon
-    assert sorted(shown("reblochonk")) == [pulls]        # boss
-    assert sorted(shown("kartik")) == sorted([boss, pulls, noside])  # character
-    assert sorted(shown("kartik reblochonk")) == [pulls]  # terms narrow (AND)
-    # failure comes from the SIDECAR: the killed boss and the sidecar-less boss
-    # both drop out, even though the latter is a failed boss too
-    assert sorted(shown("failed")) == [boss]
-    assert sorted(shown("wipe")) == [boss]
-    assert sorted(shown("")) == sorted([boss, pulls, killed, noside])
+    assert shown("ice") == [ice]                 # row name
+    assert shown("reblochonk") == [pulls]        # boss label
+    assert shown("kartik") == sorted([boss, pulls, ice])   # character
+    assert shown("") == sorted([boss, pulls, ice])
     assert reads == [], "the search parsed a log"
 
     # typing in the box drives the same filter (the box lives outside the tree)
-    host.cp_fights_search.setText("alara")
-    assert host._cp_fights_query == "alara"
-    assert [e["row"]["path"] for e in host._cp_log_rows] == [killed]
+    host.cp_fights_search.setText("ice")
+    assert host._cp_fights_query == "ice"
+    assert [e["row"]["path"] for e in host._cp_log_rows] == [ice]
 
     # a query that matches nothing says so WITHOUT hiding the box to clear it
     host.cp_fights_search.setText("nothing-matches-this")
@@ -1517,9 +1377,10 @@ def test_the_search_matches_name_fields_and_sidecar_failure_without_parsing(
 def test_the_search_box_does_not_read_a_log_to_answer(tmp_path, monkeypatch):
     """The whole point: the index stays lazy while the box filters a season."""
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
+    day = tmp_path / "2026-10"
     for i in range(5):
-        _write_log(day, f"Boss{i}_Kartik_Warrior_a1b2.json", [_fight("boss")])
+        _write_log(day, f"Boss{i}.json.gz",
+                   [_fight("boss", name=f"Boss{i}")])
     reads = _spy_reads(monkeypatch)
 
     host.cp_fights_search.setText("boss3")
@@ -1527,48 +1388,6 @@ def test_the_search_box_does_not_read_a_log_to_answer(tmp_path, monkeypatch):
     host.cp_fights_search.setText("")
     assert len(host._cp_log_rows) == 5
     assert reads == []
-
-
-def test_the_char_label_uses_the_shared_slug_and_token_sets(tmp_path):
-    """The index recovers a per-boss label through `boss_file_slug`, not its own
-    re-derivation of the underscore boundary, the outcome token and the class.
-
-    Re-parsing is how the index drifts from the writer: a naming change (a new
-    outcome token, the class appended after the hash) would leave the row
-    reading a different character than the one that wrote the file. These are
-    the shapes the writer emits, and each must reduce to the writer's slug.
-    """
-    from farever_companion.core import dps_tracker_history as dth
-    import farever_companion.ui.combat.history_index as hi
-
-    # the index uses the WRITER's token sets, not copies of them
-    assert hi._MODE_TOKENS is dth.MODE_TOKENS
-    assert hi._OUTCOME_TOKENS is dth.OUTCOME_TOKENS
-
-    day = tmp_path / "2026-10" / "02"
-    cases = {
-        # a plain per-boss name
-        "Kobolds Mines - Reblochonk_Kartik_Warrior_a1b2_PASS.json":
-            "Kartik Warrior A1b2",
-        # outcome + difficulty tail
-        "Kobolds Mines - Reblochonk_Kartik_Warrior_a1b2_FAILED_HARD.json":
-            "Kartik Warrior A1b2",
-        # the class `file_for` appends AFTER the hash
-        "Kobolds Mines - Reblochonk_Kartik_a1b2_Warrior_PASS.json":
-            "Kartik A1b2",
-        # the account hash is not part of the name
-        "Kobolds Mines - Reblochonk_Kartik_Warrior_S8c4ba8_PASS.json":
-            "Kartik Warrior",
-        # a bare boss name with a slug, no class/outcome
-        "Reblochonk_Kartik_Warrior_a1b2.json":
-            "Kartik Warrior A1b2",
-    }
-    for name, want in cases.items():
-        path = day / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"history": []}', encoding="utf-8")
-        assert dth.boss_file_slug(path.stem), name      # the shared helper sees it
-        assert hi._char_label_from_history_path(path) == want, name
 
 
 # --- deleting archived fights: the file goes when its last fight does --------
@@ -1592,26 +1411,20 @@ def test_deleting_every_fight_removes_the_log_and_its_empty_folders(
     """
     import farever_companion.ui.combat.past_fights as pf
     import farever_companion.ui.combat.history_index as hi
-    from farever_companion.ui.combat.history_index import (
-        load_history_sessions, write_log_summary)
+    from farever_companion.ui.combat.history_index import load_history_sessions
 
     _yes_to_confirm(monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    log = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    log = _write_log(day, "King Ratsar.json.gz",
                      [_fight("boss", start=1000.0),
                       _fight("boss", start=2000.0)])
     sessions = load_history_sessions(log)
-    assert write_log_summary(log, sessions) is not None
-    sidecar = Path(str(log) + ".summary")
-    assert sidecar.exists()
 
     assert pf.delete_past_fights_batch(
         None, [(log, s) for s in sessions], active_tracker=None) is True
 
     assert not log.exists(), "the emptied log file stayed on disk"
-    assert not sidecar.exists(), "the log's sidecar outlived its log"
-    assert not day.exists(), "the emptied day folder stayed"
-    assert not day.parent.exists(), "the emptied month folder stayed"
+    assert not day.exists(), "the emptied month folder stayed"
     assert hi.scan_history_dir(tmp_path) == []
 
 
@@ -1622,8 +1435,8 @@ def test_deleting_one_of_several_fights_keeps_the_log_with_the_rest(
     from farever_companion.ui.combat.history_index import load_history_sessions
 
     _yes_to_confirm(monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    log = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    log = _write_log(day, "King Ratsar.json.gz",
                      [_fight("boss", start=1000.0),
                       _fight("boss", name="Other", start=2000.0,
                              target="👑 Other")])
@@ -1644,8 +1457,8 @@ def test_deleting_the_only_fight_removes_the_file(tmp_path, monkeypatch):
     from farever_companion.ui.combat.history_index import load_history_sessions
 
     _yes_to_confirm(monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    log = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+    day = tmp_path / "2026-10"
+    log = _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
     sess = load_history_sessions(log)[0]
 
     assert pf.delete_past_fight(None, log, sess, active_tracker=None) is True
@@ -1667,9 +1480,9 @@ def test_select_all_reveals_every_fight_it_selects(tmp_path, monkeypatch):
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
-    _write_log(day, "Queen Vex_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    _write_log(day, "Queen Vex.json.gz",
                [_fight("boss", name="Queen Vex", target="👑 Queen Vex")])
     host._render_past_fights()
 
@@ -1695,8 +1508,8 @@ def test_select_all_leaves_a_log_with_nothing_matching_closed(tmp_path, monkeypa
     from PySide6 import QtWidgets
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json", [_fight("boss")])
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
     _write_log(day, "trash_Kartik_Warrior_a1b2.json", [_fight("trash")])
     host._cp_fights_filter = "boss"
     # The trash row folds under this filter, so ask for it: Select All still has
@@ -1728,8 +1541,8 @@ def test_every_fight_row_carries_its_selection_box(tmp_path, monkeypatch):
     from tests.qt_helpers import click
 
     host = _fights_host(tmp_path, monkeypatch)
-    day = tmp_path / "2026-10" / "02"
-    log = _write_log(day, "King Ratsar_Kartik_Warrior_a1b2.json",
+    day = tmp_path / "2026-10"
+    log = _write_log(day, "King Ratsar.json.gz",
                      [_fight("boss"), _fight("boss", name="Queen Vex")])
     host._render_past_fights()
     entry, _row = _log_row(host, log)
@@ -1779,7 +1592,7 @@ def test_a_killed_boss_fight_says_so_on_its_own_row(tmp_path, monkeypatch):
         test failing). A day per case leaves exactly one row to look at.
         """
         host = _fights_host(tmp_path, monkeypatch)
-        day = tmp_path / "2026-10" / day_name
+        day = tmp_path / "2026-10"
         _write_log(day, filename, [fight])
         host._render_past_fights()
         entry, _row = _log_row(host, day / filename)
@@ -1789,14 +1602,153 @@ def test_a_killed_boss_fight_says_so_on_its_own_row(tmp_path, monkeypatch):
         return _row_labels(rows[0])
 
     assert "✔ KILLED" in labels_of_one_fight(
-        "02", "King Ratsar_Kartik_Warrior_a1b2.json",
+        "02", "King Ratsar.json.gz",
         _fight("boss", name="Boss Fight (Boss Defeated)"))
     # a wipe keeps the outcome it already had, and gets no kill chip
-    wipe = labels_of_one_fight("03", "Queen Vex_Kartik_Warrior_a1b2.json",
-                               _fight("boss", name="Boss Fight (Died)"))
+    wipe = labels_of_one_fight("03", "Queen Vex.json.gz",
+                               _fight("boss", name="Boss Fight (Died)",
+                                      boss_killed=False))
     assert "✔ KILLED" not in wipe
     assert "FAILED" in wipe
     # a trash pull whose name claims a kill: the KIND gate is what stops it
     assert "✔ KILLED" not in labels_of_one_fight(
-        "04", "Trash pack Queen Vex_Kartik_Warrior_a1b2.json",
+        "04", "trash.json.gz",
         _fight("trash", name="Boss Fight (Boss Defeated)"))
+
+
+# --- the recorded party and the client build on a row (2026-10-09) ----------#
+#
+# Two facts the archive has recorded since 2026-10-09 and nothing drew: who was
+# PRESENT (the game's own group roster, which counts a member who dealt no
+# damage - the archived player rows are culled to whoever scored) and the client
+# build the run was played on. Both reach a row two ways, and that is the point
+# of this section: a collapsed LOG row has only the sidecar (the list must stay
+# read-free), while a FIGHT row has the parsed session.
+
+def _fight_with_party(kind="boss", name="King Ratsar", start=1000.0, mode="",
+                      party=(), build="", **kw) -> dict:
+    """A fight dict carrying the party roster and the client build."""
+    fight = _fight(kind, name=name, start=start, mode=mode, **kw)
+    fight["roster"] = [{"name": n, "hero_class": c, "is_me": m}
+                       for n, c, m in party]
+    fight["game_version"] = build
+    return fight
+
+
+def test_a_log_row_says_how_many_were_present_and_which_client(
+        tmp_path, monkeypatch):
+    """The count is a chip on the row; the names are the hover.
+
+    A party is a list and the row is one line, so four names in the row would
+    push the damage it exists for off its right edge. The count has to be the
+    sidecar's `party_size` (the true member count) rather than the number of
+    names the sidecar stored, because that list is capped.
+    """
+    host = _fights_host(tmp_path, monkeypatch)
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [
+        _fight_with_party(start=1000.0, mode="heroic",
+                          party=[("Kartik", "warrior", True),
+                                 ("Mira", "priest", False)],
+                          build="steam-25782799")])
+    host._render_past_fights()
+    _entry, row_w = _log_row(host, day / "King Ratsar.json.gz")
+    labels = _row_labels(row_w)
+
+    assert "\U0001f465 2" in labels, labels
+    assert "steam-25782799" in labels, labels
+    tip = row_w.toolTip()
+    assert "Kartik (you)" in tip and "Mira" in tip, tip
+    _assert_tooltip_covers_row(tip, row_w)
+
+
+def test_a_log_that_recorded_no_party_draws_no_chip(tmp_path, monkeypatch):
+    """Absent is not zero: no chip, and the hover says which fact is missing.
+
+    Every archive written before the capture lands here, so the honest render is
+    a row that looks exactly as it did before - and a tooltip that admits the
+    build is unrecorded rather than a chip reading "unknown", which would look
+    like data the game gave us.
+    """
+    host = _fights_host(tmp_path, monkeypatch)
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    host._render_past_fights()
+    _entry, row_w = _log_row(host, day / "King Ratsar.json.gz")
+    labels = _row_labels(row_w)
+
+    assert not any("\U0001f465" in t for t in labels), labels
+    assert not any("steam" in t for t in labels), labels
+    assert "client build not recorded" in row_w.toolTip()
+
+
+def test_the_party_chip_is_the_largest_party_in_the_log(tmp_path, monkeypatch):
+    """One log, two attempts, two different parties: the log's answer is the
+    wider one - a member who joined for the kill was still there for that run."""
+    host = _fights_host(tmp_path, monkeypatch)
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [
+        _fight_with_party(start=1000.0,
+                          party=[("Kartik", "warrior", True)],
+                          build="steam-100"),
+        _fight_with_party(start=2000.0,
+                          party=[("Kartik", "warrior", True),
+                                 ("Mira", "priest", False),
+                                 ("Thornblade", "rogue", False)],
+                          build="steam-200")])
+    host._render_past_fights()
+    _entry, row_w = _log_row(host, day / "King Ratsar.json.gz")
+    labels = _row_labels(row_w)
+
+    assert "\U0001f465 3" in labels, labels
+    # the NEWEST session's build is the log's answer...
+    assert "steam-200" in labels, labels
+    # ...and a log that spans a patch says so on hover
+    tip = row_w.toolTip()
+    assert "steam-100" in tip and "spans more than one build" in tip, tip
+
+
+def test_a_fight_row_counts_present_apart_from_scored(tmp_path, monkeypatch):
+    """"N players" counted SCORERS; a party of three with one scorer said 1.
+
+    The row was already printing a number it could not explain. Both facts are
+    known here (the session holds the party AND the player rows), so the slot
+    states them labelled - and the hover names who was present, which is the
+    only place the difference is legible.
+    """
+    host = _fights_host(tmp_path, monkeypatch)
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [
+        _fight_with_party(name="King Ratsar (Boss Defeated)",
+                          party=[("Kartik", "warrior", True),
+                                 ("Mira", "priest", False),
+                                 ("Thornblade", "rogue", False)],
+                          build="steam-25782799")])
+    host._render_past_fights()
+    entry, _row = _log_row(host, day / "King Ratsar.json.gz")
+    host._toggle_log_row(entry)
+
+    rows = _visible_fight_rows(host)
+    assert len(rows) == 1
+    labels = _row_labels(rows[0])
+    assert any("3 present" in t and "1 scored" in t for t in labels), labels
+    assert "steam-25782799" in labels, labels
+    tip = rows[0].toolTip()
+    for who in ("Kartik", "Mira", "Thornblade"):
+        assert who in tip, tip
+    _assert_tooltip_covers_row(tip, rows[0])
+
+
+def test_a_fight_row_without_a_party_keeps_the_count_it_always_had(
+        tmp_path, monkeypatch):
+    """An archive from before the capture must not lose the number it had."""
+    host = _fights_host(tmp_path, monkeypatch)
+    day = tmp_path / "2026-10"
+    _write_log(day, "King Ratsar.json.gz", [_fight("boss")])
+    host._render_past_fights()
+    entry, _row = _log_row(host, day / "King Ratsar.json.gz")
+    host._toggle_log_row(entry)
+
+    labels = _row_labels(_visible_fight_rows(host)[0])
+    assert any("1 players" in t for t in labels), labels
+    assert not any("present" in t for t in labels), labels

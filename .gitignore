@@ -9,9 +9,9 @@ env/
 dist/
 build/
 *.spec
-# ...but the committed FareverPal build spec IS tracked (single source of build
+# ...but the committed FareverMod build spec IS tracked (single source of build
 # truth).
-!FareverPal.spec
+!FareverMod.spec
 
 # --- Rust build output (farever_native) ---
 native/target/
@@ -89,7 +89,6 @@ tmp_*
 docs/*
 !docs/setup.md
 !docs/_config.yml
-!docs/CREDITS.md
 # Session handoffs are deliberately NOT re-allowed: docs/ is machine-local
 # working context, not a repo artifact (dropped from the index 2026-10-06).
 Run_Scripts.bat

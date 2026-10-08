@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo =======================================================
-echo  FareverPal Combat Hook: Hot Injector
+echo  FareverMod Combat Hook: Hot Injector
 echo =======================================================
 
 set "SCRIPT_DIR=%~dp0"

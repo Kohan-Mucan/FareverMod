@@ -1,18 +1,21 @@
-Farever Companion
-=================
+FareverMod
+==========
 
 A lightweight, read-only companion overlay for the Steam game Farever:
 a minimap, loot/drop predictions, an entity overlay, and a DPS meter.
 
 This is a fan-made tool. It is NOT affiliated with or endorsed by the
-developers. It only READS game memory (it never writes to or modifies the
-game) and ships no game assets beyond small UI icons.
+developers. Overlays, loot, and the minimap only READ game memory. The DPS
+meter needs a combat feed: pick a capture mode in Settings - the proxy/injector
+modes load a small bridge DLL to export combat events (no game state is ever
+modified), or use the Memory Reader mode for a strictly DLL-free session. It
+ships no game assets beyond small UI icons.
 
 
 How to run
 ----------
 1. Start Farever.
-2. Double-click  FareverCompanion.exe
+2. Double-click  FareverMod.exe
    (Windows may show a SmartScreen warning because the app is unsigned —
     choose "More info" > "Run anyway".)
 3. In the Companion window, click "Attach" to connect to the running game.

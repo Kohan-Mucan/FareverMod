@@ -284,7 +284,8 @@ class DpsOverlay(OverlayWindow):
         self._row_widgets.clear()
         self._row_collapsed.clear()
         self._skills_show_all.clear()
-        self.empty_lbl.show()
+        self.pause_btn.setText("❚❚ Pause")
+        self.empty_lbl.setVisible(bool(self.empty_lbl.text()))
         self.time_lbl.setText("00:00.0")
         self.seg_lbl.setText("")
         self.state_lbl.setText("READY")
@@ -543,7 +544,6 @@ class DpsOverlay(OverlayWindow):
             self.game_lbl.setStyleSheet(
                 f"font-size: 10px; font-weight: 700; color: {theme.GOLD};")
         elif in_combat:
-            elapsed = getattr(self.tracker, "game_encounter_elapsed", None)
             try:
                 elapsed = self.tracker.game_encounter_elapsed
             except Exception:
@@ -707,7 +707,7 @@ class DpsOverlay(OverlayWindow):
         if not ranked:
             self.empty_lbl.setText(
                 empty_hint(self._dm(), self._empty_hint_default()))
-            self.empty_lbl.show()
+            self.empty_lbl.setVisible(bool(self.empty_lbl.text()))
             self.dps_top_box.hide()
             for w in list(self._row_widgets.values()):
                 w.deleteLater()
@@ -792,11 +792,16 @@ class DpsOverlay(OverlayWindow):
             if current_idx != idx:
                 rows_lay.insertWidget(idx, row_widget)
 
-        for name, widget in self._row_widgets.items():
-            if name not in active_names:
-                widget.hide()
-                if rows_lay.indexOf(widget) >= 0:
-                    rows_lay.removeWidget(widget)
+        # Stale rows are destroyed, not parked: hiding them kept every name
+        # ever seen alive in the dict, so a long open-world session with
+        # rotating bystanders grew the widget set without bound. The chevron
+        # choices survive in `_row_collapsed` / `_skills_show_all`, so a
+        # returning name rebuilds exactly as it was.
+        for name in [n for n in self._row_widgets if n not in active_names]:
+            widget = self._row_widgets.pop(name)
+            if rows_lay.indexOf(widget) >= 0:
+                rows_lay.removeWidget(widget)
+            widget.deleteLater()
 
         # HUD header: player count + group totals in the active channel.
         self.dps_top_box.header.set_text(f"TOP DPS · {len(ranked)}")

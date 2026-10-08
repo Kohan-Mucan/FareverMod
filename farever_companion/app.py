@@ -199,7 +199,7 @@ def _instance_lock() -> tuple[str, QtCore.QLockFile | None]:
     except Exception:
         return "skip", None
     try:
-        lock = QtCore.QLockFile(str(config_dir() / "fareverpal.lock"))
+        lock = QtCore.QLockFile(str(config_dir() / "farevermod.lock"))
         # In Qt, setStaleLockTime(0) means 'never consider stale', which broke
         # crash recovery. Default 30s + active PID verification handles orphaned locks.
         lock.setStaleLockTime(30000)
@@ -302,8 +302,8 @@ def _warn_conflict(parent: QtWidgets.QWidget | None = None,
     double-launch can never leave a parked 4 MB warning process behind -
     every loser of the single-instance race exits on its own."""
     box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning,
-                                "Farever Pal is already running",
-                                "Another Farever Pal instance is already "
+                                "FareverMod is already running",
+                                "Another FareverMod instance is already "
                                 "open on this data folder.\n\nTwo instances "
                                 "writing the same settings can wipe your "
                                 "collection and progress data.\n\nClose the "
@@ -340,8 +340,8 @@ def main() -> int:
     # Dev-only right-click Copy menu (element + text + parent chain for
     # pasting bug reports back verbatim); frozen builds skip it internally.
     install_copy_menu(app)
-    app.setApplicationName("Farever Pal")
-    app.setOrganizationName("FareverPal")
+    app.setApplicationName("FareverMod")
+    app.setOrganizationName("FareverMod")
     theme.apply(app)                 # loads bundled fonts + installs QSS
     _probe("theme applied")
     app.setWindowIcon(_app_icon())

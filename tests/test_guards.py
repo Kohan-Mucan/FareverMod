@@ -41,7 +41,6 @@ from PySide6 import QtTest, QtWidgets
 from farever_companion.ui.copy_utils import copy_text, copy_with_feedback
 from farever_companion.backup import master as mb
 from farever_companion.runtime.persist import atomic_write_json
-import zipfile
 from farever_companion.core import updater
 from farever_companion.core.updater import parse_version, is_newer, UpdateInfo
 from tests.qt_helpers import destroy_panel  # noqa: E402
@@ -672,7 +671,7 @@ A frozen build uses ``<exe>/moddata``. Source-tree launches (``run.py`` via
 path. The source launchers therefore cannot write the main user-data folder
 by accident.
 """
-def _reset_frozen(monkeypatch, root, frozen: bool, exe_name="FareverPal.exe"):
+def _reset_frozen(monkeypatch, root, frozen: bool, exe_name="FareverMod.exe"):
     """Point config.store's process detection at a fake exe root.
 
     config.store reads the real ``sys`` module inside config_dir() (imported
@@ -1201,11 +1200,6 @@ class _FakeAPI:
         return self._payload
 
 
-#: A release asset URL shaped like the one the project actually publishes (a
-#: GitHub release download). `check` holds `url` to the host trust list now, so a
-#: fixture naming an arbitrary host is refused before the assertions below.
-_TRUSTED_ASSET = ("https://github.com/kohan-mucan/FareverPal/releases/download/"
-                  "v9.9.9/FareverPal.exe")
 def _bump_major(v: str) -> str:
     parts = list(parse_version(v))
     parts[0] += 1
@@ -1213,50 +1207,13 @@ def _bump_major(v: str) -> str:
 def test_check_returns_info_when_newer():
     bumped = _bump_major(updater.current_version())
     info = updater.check(_FakeAPI({
-        "ok": True, "version": bumped, "url": _TRUSTED_ASSET,
-        "notes": "n", "sha256": "abc", "size": 10,
+        "ok": True, "version": bumped, "notes": "n",
+        "html_url": "https://github.com/kohan-mucan/FareverMod/releases/tag/vX",
     }))
     assert isinstance(info, UpdateInfo)
     assert info.version == bumped
-    assert info.url == _TRUSTED_ASSET
-    assert info.sha256 == "abc"
-    assert info.size == 10
-
-
-def test_check_rejects_a_payload_with_no_sha256():
-    """The release sha256 (the hash the binary is installed and relaunched with) is
-    now required. Without it the payload is treated as unreadable — "nothing newer"
-    — so a row that arrived from a newer build (or a dropped field) is not handed to
-    a pill that asks the player to install an unhashed binary.
-    """
-    for variant in (
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": None},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": ""},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": "   "},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": 7, "size": None},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": [], "size": None},
-    ):
-        got = updater.check(_FakeAPI(variant))
-        assert got is None, (variant, got)
-
-
-def test_check_rejects_a_payload_with_no_size():
-    """A payload missing its size is still installed, but only after the sha256
-    check passes. size is optional for the progress bar, mandatory for the hash.
-    """
-    got = updater.check(_FakeAPI({
-        "ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-        "sha256": "abc", "size": None,
-    }))
-    assert isinstance(got, updater.UpdateInfo), got
-    assert got.size is None
-    assert got.sha256 == "abc"
+    assert info.notes == "n"
+    assert info.html_url.endswith("/vX")
 
 
 def test_check_none_when_same_version():
@@ -1265,7 +1222,6 @@ def test_check_none_when_same_version():
     })) is None
 def test_check_none_on_error_payload():
     assert updater.check(_FakeAPI({"ok": False, "error": "network"})) is None
-    assert updater.check(_FakeAPI({"ok": True, "version": "9.9.9", "url": ""})) is None
     assert updater.check(_FakeAPI(None)) is None
 def test_check_swallows_api_exception():
     class Boom:
@@ -1273,55 +1229,19 @@ def test_check_swallows_api_exception():
             raise RuntimeError("boom")
     assert updater.check(Boom()) is None
 
-def test_check_rejects_a_payload_with_no_sha256():
-    """The release sha256 (the hash the binary is installed and relaunched with) is
-    now required. Without it the payload is treated as unreadable — "nothing newer"
-    — so a row that arrived from a newer build (or a dropped field) is not handed to
-    a pill that asks the player to install an unhashed binary.
+def test_check_needs_only_a_version_to_raise_the_pill():
+    """Notify-only: the asset url/sha256/size the old download path required are
+    gone, so a payload naming only a newer version is enough.
+
+    The app no longer downloads its own exe - it links to the release page - so a
+    missing hash, size or asset URL cannot suppress the notification. A malformed
+    version still can (`clean_version`), and that is the one field left.
     """
-    for variant in (
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": None},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": ""},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": "   "},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": "0", "size": None},
-    ):
-        got = updater.check(_FakeAPI(variant))
-        assert got is None, (variant, got)
-
-
-def test_check_rejects_a_payload_with_code_sha256():
-    """A non-string sha256 (e.g. the payload hands back an integer or a list) is
-    not accepted either — only a string hash can be verified and installed.
-    """
-    for variant in (
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": 7, "size": None},
-        {"ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-         "sha256": [], "size": None},
-    ):
-        got = updater.check(_FakeAPI(variant))
-        assert got is None, (variant, got)
-
-
-def test_check_rejects_a_payload_with_no_size():
-    """A payload missing its size is still installed, but only after the sha256
-    check passes. size is optional for the progress bar, mandatory for the hash.
-    """
-    got = updater.check(_FakeAPI({
-        "ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-        "sha256": "abc", "size": None,
-    }))
-    assert got is None, got
-    got = updater.check(_FakeAPI({
-        "ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
-        "sha256": "abc", "size": 10,
-    }))
-    assert isinstance(got, updater.UpdateInfo), got
+    info = updater.check(_FakeAPI({"ok": True, "version": "999.0.0"}))
+    assert isinstance(info, UpdateInfo), info
+    assert info.version == "999.0.0"
+    assert info.notes == ""
+    assert info.html_url == ""          # no page named -> page_url falls back
 
 
 def test_check_refuses_a_payload_whose_version_is_not_a_version():
@@ -1337,102 +1257,6 @@ def test_check_refuses_a_payload_whose_version_is_not_a_version():
         assert updater.check(_FakeAPI({
             "ok": True, "version": junk, "url": "https://x/y.zip",
         })) is None, junk
-def test_check_drops_a_release_url_the_app_would_not_fetch():
-    """The payload's `url` is fetched by the downloader, so it must be an URL.
-
-    A scheme-less string or a non-http scheme is a browser error page or a
-    local-file launch, not a download: the check reports "nothing newer" rather
-    than handing that to urllib.
-    """
-    for junk in ("not a url", "file:///C:/x.exe", "javascript:alert(1)",
-                 "ftp://x/y.zip", "https://", "", None):
-        assert updater.check(_FakeAPI({
-            "ok": True, "version": "999.0.0", "url": junk,
-        })) is None, junk
-def test_an_asset_url_from_a_host_we_do_not_publish_on_is_refused():
-    """The payload's `url` is not merely fetched: what comes back is written
-    over the installed exe and relaunched (`download_and_stage` ->
-    `apply_and_relaunch`).
-
-    `http_url` accepts ANY host with a scheme, so the release JSON could name
-    `https://evil.example/x.exe` and the updater would have downloaded that
-    binary, staged it as `<exe>.new` next to the running app and swapped it in on
-    the next confirm - the oracle's response was the whole of the trust. The
-    asset now has to live on a host FareverPal actually publishes on: GitHub, or
-    the user-content CDN GitHub hands a release asset to.
-    """
-    for url in ("https://github.com/kohan-mucan/FareverPal/releases/download/"
-                "v9.9.9/FareverPal.exe",
-                "https://objects.githubusercontent.com/x/y.exe",
-                "https://release-assets.githubusercontent.com/x/y.exe",
-                "https://github-releases.githubusercontent.com/x/y.exe",
-                "https://GitHub.com/x/y.exe",        # the host match is case-blind
-                # the HOST is what is trusted, not the text of the URL: a path
-                # that happens to spell another domain is still github.com
-                "https://github.com/x/y.zip.evil.example"):
-        info = updater.check(_FakeAPI({"ok": True, "version": "999.0.0",
-                                       "url": url}))
-        assert info is not None, url
-        assert info.url == url, url
-
-    for url in ("https://evil.example/x.exe",
-                # the oracle is where this URL CAME FROM: a release row that
-                # points back at the oracle is a row serving its own binary
-                "https://farever-pals.com/x.exe",
-                "http://github.com.evil.example/x.exe",     # suffix, wrong side
-                "https://evil-githubusercontent.com/x.exe",  # not a real subdomain
-                "https://notgithub.com/x.exe",
-                "https://xgithub.com/x.exe",
-                "ftp://github.com/x.exe"):
-        assert updater.check(_FakeAPI({"ok": True, "version": "999.0.0",
-                                       "url": url})) is None, url
-
-
-def test_the_download_path_refuses_a_host_we_do_not_publish_on(tmp_path,
-                                                               monkeypatch):
-    """The gate is enforced where the download HAPPENS, not only at `check`.
-
-    `check` refuses the payload, but `download_and_stage` is the function that
-    writes a binary over the installed exe, and it takes an `UpdateInfo` - so a
-    future caller, a hand-rolled one, or a payload that got past an older build
-    must not be able to make it fetch from an arbitrary host. The refusal is
-    raised BEFORE the network (nothing is requested, no temp file appears) and
-    the installed exe is left byte-for-byte alone.
-    """
-    exe = tmp_path / "FareverPal.exe"
-    exe.write_bytes(b"MZ" + b"PADDING!" * 4)
-    monkeypatch.setattr(updater, "is_frozen", lambda: True)
-    monkeypatch.setattr(updater, "exe_path", lambda: exe)
-
-    calls = []
-
-    class _ReachedNetwork(Exception):
-        pass
-
-    def _urlopen(req, *a, **k):
-        calls.append(req.full_url)
-        raise _ReachedNetwork(req.full_url)
-
-    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
-
-    bad = UpdateInfo(version="9.9.9", url="https://evil.example/x.exe")
-    with pytest.raises(RuntimeError) as caught:
-        updater.download_and_stage(bad)
-    assert "not on a trusted host" in str(caught.value)
-    assert "evil.example" in str(caught.value)      # names what was refused
-    assert calls == [], calls                       # nothing was fetched
-    assert not (tmp_path / "FareverPal.exe.download").exists()
-    assert not (tmp_path / "FareverPal.exe.new").exists()
-    assert exe.read_bytes() == b"MZ" + b"PADDING!" * 4
-
-    # and the same call from a trusted host DOES reach the network, so the
-    # refusal above is the trust list and not a download path that never works
-    ok = UpdateInfo(version="9.9.9", url=_TRUSTED_ASSET)
-    with pytest.raises(_ReachedNetwork):
-        updater.download_and_stage(ok)
-    assert calls == [_TRUSTED_ASSET], calls
-
-
 def test_a_release_page_that_is_not_a_page_is_left_empty():
     """`html_url` feeds the browser fallback, so junk is dropped at the wire.
 
@@ -1440,16 +1264,101 @@ def test_a_release_page_that_is_not_a_page_is_left_empty():
     that decides where a click goes, and two of them would eventually disagree.
     """
     info = updater.check(_FakeAPI({
-        "ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
+        "ok": True, "version": "999.0.0",
         "html_url": "javascript:alert(1)",
     }))
     assert info is not None and info.html_url == ""
     assert updater.page_url(info.html_url) == updater.DOWNLOAD_PAGE
     good = updater.check(_FakeAPI({
-        "ok": True, "version": "999.0.0", "url": _TRUSTED_ASSET,
+        "ok": True, "version": "999.0.0",
         "html_url": "https://github.com/x/y/releases/tag/v999.0.0",
     }))
     assert updater.page_url(good.html_url).endswith("v999.0.0")
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: str):
+        self._body = body.encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _serve_github(monkeypatch, payload):
+    """Answer the next urllib request with `payload` as GitHub's release JSON."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, *a, **k: _FakeHTTPResponse(json.dumps(payload)))
+
+
+def _github_release(tag="v999.0.0", **overrides):
+    rel = {
+        "tag_name": tag,
+        "draft": False,
+        "body": "notes",
+        "html_url": f"https://github.com/Kohan-Mucan/FareverMod/releases/tag/{tag}",
+    }
+    rel.update(overrides)
+    return rel
+
+
+def test_fetch_latest_release_maps_github_json_into_the_oracle_shape(monkeypatch):
+    """The updater reads GitHub's releases API directly now, so the API's JSON
+    has to arrive at `check` in the shape it already validates - and survive the
+    whole way to an `UpdateInfo` the pill can raise."""
+    _serve_github(monkeypatch, [_github_release()])
+    res = updater.fetch_latest_release()
+    assert res["ok"] is True
+    assert res["version"] == "v999.0.0"
+    assert res["notes"] == "notes"
+    assert res["html_url"].endswith("/v999.0.0")
+    info = updater.check(_FakeAPI(res))
+    assert isinstance(info, UpdateInfo)
+    assert info.version == "999.0.0"          # the leading `v` is dropped
+
+
+def test_fetch_latest_release_reads_the_list_so_a_prerelease_still_counts(
+        monkeypatch):
+    """The LIST endpoint is read on purpose, so a pre-release raises the pill.
+
+    `/releases/latest` skips pre-releases, so a `-betaN` build would never be
+    seen. The newest entry wins (drafts are still skipped, per GitHub).
+    """
+    _serve_github(monkeypatch, [
+        _github_release("v999.0.0-beta2", prerelease=True),
+        _github_release("v999.0.0", draft=True),      # a draft is skipped
+        _github_release("v0.0.1"),
+    ])
+    res = updater.fetch_latest_release()
+    assert res["ok"] is True
+    assert res["version"] == "v999.0.0-beta2"
+
+
+def test_fetch_latest_release_swallows_network_and_bad_payloads(monkeypatch):
+    """Like the old oracle, a missing network or a body that is not a release
+    list is reported, never raised - the caller shows no pill rather than
+    crashing."""
+    def _boom(req, *a, **k):
+        raise OSError("no net")
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    assert updater.fetch_latest_release() == {"ok": False, "error": "network"}
+
+    _serve_github(monkeypatch, {"message": "Not Found"})    # a dict, not a list
+    assert updater.fetch_latest_release().get("ok") is False
+
+    _serve_github(monkeypatch, [])                          # no releases at all
+    assert updater.fetch_latest_release().get("ok") is False
+
+    _serve_github(monkeypatch, [_github_release(draft=True)])   # only drafts
+    assert updater.fetch_latest_release().get("ok") is False
+
+
 def test_clean_version_is_the_only_version_the_ui_may_print():
     """What the pill may draw: a version, once, without the payload's own `v`.
 
@@ -1468,7 +1377,7 @@ def test_the_startup_check_raises_the_update_pill(cp, monkeypatch):
     flagged this round trip as missing (the pill's only handler had no caller),
     so it is pinned here.
     """
-    info = UpdateInfo(version="9.9.9", url="https://x/y.zip", notes="n")
+    info = UpdateInfo(version="9.9.9", notes="n")
     monkeypatch.setattr(updater, "check", lambda *a, **k: info)
     assert cp._update_btn.isHidden() is True
 
@@ -1507,39 +1416,39 @@ def test_the_pill_refuses_a_release_it_cannot_name(cp):
     prevents.
     """
     for junk in ("", "   ", "latest", "v", None):
-        cp._on_update_found(UpdateInfo(version=junk, url="https://x/y.zip"))
+        cp._on_update_found(UpdateInfo(version=junk))
         assert cp._update_info is None, junk
         assert cp._update_btn.isHidden() is True, junk
         assert cp._update_btn.text() == "", junk
 def test_the_pill_label_is_the_version_and_only_the_version(cp):
     """One `v`, never doubled, never truncated - and the retry label obeys the
     same rule, because it is built by the same function."""
-    assert update_pill_text(UpdateInfo(version="v9.9.9", url="u")) == "↑  Update to v9.9.9"
-    assert update_pill_text(UpdateInfo(version="9.9.9", url="u"),
+    assert update_pill_text(UpdateInfo(version="v9.9.9")) == "↑  Update to v9.9.9"
+    assert update_pill_text(UpdateInfo(version="9.9.9"),
                             " (retry)") == "↑  Update to v9.9.9 (retry)"
-    assert update_pill_text(UpdateInfo(version="junk", url="u")) == ""
+    assert update_pill_text(UpdateInfo(version="junk")) == ""
     assert update_pill_text(None) == ""
-    cp._on_update_found(UpdateInfo(version="v9.9.9", url="https://x/y.zip"))
+    cp._on_update_found(UpdateInfo(version="v9.9.9"))
     assert cp._update_btn.text() == "↑  Update to v9.9.9"
     assert cp._update_btn.isHidden() is False
     assert cp._update_info.version == "v9.9.9"   # the caller's object is not rewritten
 def test_the_pill_opens_the_release_page_or_the_fallback_but_never_junk(cp, monkeypatch):
-    """A source run hands the click to the BROWSER, so it must get a page.
+    """The click hands the browser a page, never a payload string verbatim.
 
     `html_url` comes off the wire: a `javascript:` string there used to be passed
     to webbrowser.open as-is - a local-file launch dressed as an update button.
+    `page_url` swaps junk for the project's download page.
     """
     import webbrowser
     opened = []
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
-    monkeypatch.setattr(updater, "is_frozen", lambda: False)
 
-    cp._on_update_found(UpdateInfo(version="9.9.9", url="https://x/y.zip",
+    cp._on_update_found(UpdateInfo(version="9.9.9",
                                    html_url="javascript:alert(1)"))
     cp._on_update_clicked()
     assert opened == [updater.DOWNLOAD_PAGE]
 
-    cp._on_update_found(UpdateInfo(version="9.9.9", url="https://x/y.zip",
+    cp._on_update_found(UpdateInfo(version="9.9.9",
                                    html_url="https://github.com/x/y/releases"))
     cp._on_update_clicked()
     assert opened[-1] == "https://github.com/x/y/releases"
@@ -1636,46 +1545,6 @@ def test_a_packaged_build_can_opt_out_of_the_update_check(monkeypatch, tmp_path)
         assert panel._update_check_worker is not None   # the default still polls
     finally:
         destroy_panel(panel)
-def _write_zip(path, entries):
-    with zipfile.ZipFile(path, "w") as zf:
-        for name, data in entries.items():
-            zf.writestr(name, data)
-def test_stage_bare_exe(tmp_path):
-    # The current release convention: a bare PE exe (starts with "MZ").
-    dl = tmp_path / "FareverPal.exe.download"
-    dl.write_bytes(b"MZ" + b"\x00" * 64)
-    dest = tmp_path / "FareverPal.exe.new"
-    updater._stage_payload(dl, "FareverPal.exe", dest)
-    assert dest.read_bytes().startswith(b"MZ")
-    assert not dl.exists()                         # bare exe is moved, not copied
-def test_stage_zip_prefers_named(tmp_path):
-    dl = tmp_path / "asset.download"
-    _write_zip(dl, {"README.txt": "hi", "FareverPal.exe": b"MZ-named"})
-    dest = tmp_path / "FareverPal.exe.new"
-    updater._stage_payload(dl, "FareverPal.exe", dest)
-    assert dest.read_bytes() == b"MZ-named"
-def test_stage_zip_falls_back_to_any_exe(tmp_path):
-    dl = tmp_path / "asset.download"
-    _write_zip(dl, {"Renamed.exe": b"MZ2"})
-    dest = tmp_path / "out.new"
-    updater._stage_payload(dl, "FareverPal.exe", dest)
-    assert dest.read_bytes() == b"MZ2"
-def test_stage_zip_raises_when_no_exe(tmp_path):
-    dl = tmp_path / "asset.download"
-    _write_zip(dl, {"data.bin": b"x"})
-    try:
-        updater._stage_payload(dl, "FareverPal.exe", tmp_path / "o.new")
-        assert False, "expected RuntimeError"
-    except RuntimeError:
-        pass
-def test_stage_rejects_unknown_payload(tmp_path):
-    dl = tmp_path / "asset.download"
-    dl.write_bytes(b"not an exe or zip")
-    try:
-        updater._stage_payload(dl, "FareverPal.exe", tmp_path / "o.new")
-        assert False, "expected RuntimeError"
-    except RuntimeError:
-        pass
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 @pytest.fixture(scope="module", autouse=True)
 def _qapp():

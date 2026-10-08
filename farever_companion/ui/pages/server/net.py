@@ -321,7 +321,7 @@ def _download_flag(code: str) -> bool:
     try:
         # Using flagcdn.com for high quality small flags
         url = f"https://flagcdn.com/w40/{code}.png"
-        req = urllib.request.Request(url, headers={"User-Agent": "FareverPal/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "FareverMod/1.0"})
         with urllib.request.urlopen(req, timeout=2.0) as response:
             data = response.read()
         pm = QtGui.QPixmap()

@@ -547,31 +547,91 @@ def test_the_dev_tab_toggle_writes_and_removes_the_bridge_flag(
         monkeypatch, tmp_path):
     """The bridge-log control: the flag file IS the state (no settings field),
     and it is written/removed through the same bridge_log helpers the launcher
-    uses, so a dev can start and stop the DLL's own log mid-session."""
+    uses, so a dev can start and stop the DLL's own log mid-session.
+
+    BESIDE THE BINARIES, not in the game folder. Each bridge binary builds its
+    flag path from its own module directory (``GetModuleFileNameA`` ->
+    ``bridge_core.h``), so a flag written into the game folder is a file no
+    binary ever opens: the toggle used to write exactly that, and only
+    ``run-log.bat``'s own flag made the log appear - which read as the toggle
+    working when it had done nothing at all. The game dir is patched here too,
+    precisely to prove the toggle ignores it.
+    """
     from farever_companion.core import bridge_log
     game = tmp_path / "game"
     game.mkdir()
+    bridge = tmp_path / "dps_bridge"
+    bridge.mkdir()
     monkeypatch.setenv("FAREVER_DEV_CRASH_LOG", str(tmp_path / "run.log"))
     monkeypatch.setattr(_FakeHost, "_find_farever_game_dir",
                         lambda self: str(game))
+    monkeypatch.setattr("farever_companion.core.proc.get_bridge_dir",
+                        lambda: str(bridge))
 
     h = _FakeHost()
     h._page = h._page_settings()
     h._settings_tabs._pick("Dev")
-    flag = bridge_log.dev_flag_path(str(game))
+    flag = bridge_log.dev_flag_path(str(bridge))
     assert not os.path.isfile(flag)
+    assert not os.path.isfile(bridge_log.dev_flag_path(str(game))), \
+        "the toggle must not fall back to the game folder"
     before = list(h.writes)          # building the page may write; the toggle must not
 
     h._dev_flag_toggle.setChecked(True)
     assert os.path.isfile(flag)
+    # ...and it names the log BESIDE the binaries, not a moddata copy: the note
+    # under the switch tells the reader which file to watch, so the two have to
+    # agree or the switch appears to do nothing.
     named = open(flag, encoding="utf-8").read().strip()
-    assert named.endswith("bridge_dev.log")          # the log it points at
+    assert named == str(bridge / bridge_log.DEV_LOG_NAME), named
     assert any("bridge dev log enabled" in msg for msg in h.logs)
 
     h._dev_flag_toggle.setChecked(False)
     assert not os.path.isfile(flag)
     assert h.writes == before        # the flag file IS the state: no Settings field
     assert any("bridge dev log disabled" in msg for msg in h.logs)
+
+
+def test_an_asked_for_bridge_log_flag_survives_attach(monkeypatch, tmp_path):
+    """Turning the switch on must not be undone by the next attach.
+
+    `sync_dev_flag` used to DELETE the flag outside a `run-log.bat` session, on
+    the reasoning that only a dev run should log. That is right for a leftover
+    and wrong for a deliberate one: the Settings tab is a supported way to ask
+    for logging, so attaching (or installing a proxy) silently turned the switch
+    back off - and since the bridge reads the flag per log call, the next line
+    decided whether your log existed.
+
+    The staleness rule that replaces it: a flag naming a folder that EXISTS is
+    something someone asked for and is left alone; one naming a folder that is
+    gone is a leftover from an earlier session and is cleared, which is what
+    still guarantees a normal user never ends up logging.
+    """
+    from farever_companion.core import bridge_log
+    bridge = tmp_path / "dps_bridge"
+    bridge.mkdir()
+    log_here = bridge / bridge_log.DEV_LOG_NAME
+    monkeypatch.delenv(bridge_log.DEV_LOG_ENV, raising=False)
+    monkeypatch.delenv(bridge_log.DEV_LOG_DIR_ENV, raising=False)
+    flag = bridge_log.dev_flag_path(str(bridge))
+    assert bridge_log.dev_mode() is False, "this test is about a NON-dev session"
+
+    # 1. Asked for -> an attach leaves it alone.
+    bridge_log.write_dev_flag(str(bridge), log_path=str(log_here))
+    bridge_log.sync_dev_flag(str(bridge))
+    assert os.path.isfile(flag), "attach deleted a flag the user had turned on"
+
+    # 2. Refused -> an attach leaves nothing behind.
+    bridge_log.remove_dev_flag(str(bridge))
+    bridge_log.sync_dev_flag(str(bridge))
+    assert not os.path.isfile(flag)
+
+    # 3. A leftover naming a folder that is gone is still cleared, which is the
+    #    whole reason the dev gate existed.
+    with open(flag, "w", encoding="utf-8") as f:
+        f.write(str(tmp_path / "vanished" / "bridge_dev.log") + "\n")
+    bridge_log.sync_dev_flag(str(bridge))
+    assert not os.path.isfile(flag), "a stale flag must not survive an attach"
 
 
 def test_the_dev_update_check_picker_persists_and_applies(monkeypatch, tmp_path):
@@ -1697,27 +1757,25 @@ def test_the_speedrun_card_lives_on_the_dps_tab(panel):
 
 
 def test_the_run_timer_cards_chips_hug_their_content(host):
-    """The Run Timer card is the shortest card in the DPS tab's bottom
-    `StretchFlow` row (it shares that row with the Top DPS card, among
-    others), and the row hands EVERY card in it the same width and the same
-    height - its neighbour's.
+    """The DPS tab's five bottom cards form a fixed COLUMN GRID: every card in
+    a row gets the same width (so the columns line up), and each card keeps
+    its OWN height - it is never stretched to the tallest card beside it.
 
-    The chip grid used to absorb all of that slack on both axes, because it
-    was the only child free to grow: the Borderless/Transparent cell rendered
-    ~480x80 for a 3+32+3 = 38 px row of chips, so the two labels floated in a
-    sea of air and each chip was blown out to ~230 px for a 10-character
-    label. Pinned here: the cell and the chips stay at their own size hints
-    and the slack collects below them instead of inside the cell.
+    The chip grid used to absorb the row's leftover space on both axes, because
+    it was the only child free to grow: the Borderless/Transparent cell
+    rendered ~480x80 for a 3+32+3 = 38 px row of chips, so the two labels
+    floated in a sea of air and each chip was blown out to ~230 px for a
+    10-character label. Pinned here: the cell and the chips stay at their own
+    size hints, and the card's height is its content's - not the Test Dummy
+    card's.
     """
     win = QtWidgets.QMainWindow()
     inner = QtWidgets.QWidget()
     lay = QtWidgets.QVBoxLayout(inner)
     lay.addWidget(host._page)
     win.setCentralWidget(inner)
-    # Wide enough that ALL FIVE cards of that row share ONE row: below ~2600 px
-    # the Run Timer card takes a row of its own (the Test Dummy card joined the
-    # row after this test was written), where its own hint already wins and the
-    # slack question does not arise.
+    # Wide enough for ALL FIVE cards to share ONE row (five columns at 2800 px);
+    # below that the grid drops to two columns, then to a single one.
     win.resize(2800, 900)
     win.show()
     host._settings_tabs._pick("DPS")
@@ -1727,10 +1785,15 @@ def test_the_run_timer_cards_chips_hug_their_content(host):
         assert card.isVisible(), "the Run Timer card is not on screen"
         assert abs(card.y() - host._top_dps_card.y()) <= 4, (
             "precondition: the Run Timer card shares its row with Top DPS; "
-            "widen the window if the row packing changed")
+            "widen the window if the grid's column count changed")
         assert card.width() > card.sizeHint().width() * 1.5, (
-            "precondition: the row stretched this card well past its own "
+            "precondition: the column is far wider than this card's own "
             "hint, which is the situation the chip cell used to absorb")
+        # Each card keeps its OWN height: the Run Timer is the shortest card in
+        # the row and must NOT be stretched to the Test Dummy card's.
+        assert card.height() < host._dummy_card.height(), (
+            f"the Run Timer card ({card.height()}px) was stretched to its "
+            f"row's tallest card ({host._dummy_card.height()}px)")
         cells = [f for f in card.findChildren(QtWidgets.QFrame)
                  if f.objectName() == "Cell"]
         assert len(cells) == 1, "expected exactly one chip cell on the card"
@@ -1751,15 +1814,16 @@ def test_the_run_timer_cards_chips_hug_their_content(host):
         assert card.width() > cell.width() * 1.5, (
             "the card should still be much wider than its two chips")
 
-        # The slack goes BELOW the cell: the header sits at the top of the card
-        # and the cell right under it, instead of the header row ballooning to
-        # push the cell into the middle of the card.
+        # ...and the card HUGS it: the header sits at the top, the cell right
+        # under it, and the card ends just below the cell - no row slack is
+        # spent above the cell (which is what pushed it into the middle of a
+        # stretched card).
         cell_top = cell.mapTo(card, QtCore.QPoint(0, 0)).y()
-        assert cell_top < card.height() // 2, (
-            f"chip cell sits at y={cell_top} in a {card.height()}px card - the"
-            " row's slack is being spent above it")
         assert cell_top + cell.height() < card.height(), (
             "the chip cell is clipped by the card")
+        assert card.height() - (cell_top + cell.height()) < 40, (
+            f"{card.height() - (cell_top + cell.height())}px of slack sits "
+            "below the chip cell in a content-hugging card")
 
         # And each chip is its own size, not an equal share of the card.
         assert len(host._speedrun_toggles) == 2
@@ -1768,6 +1832,46 @@ def test_the_run_timer_cards_chips_hug_their_content(host):
             assert btn.width() <= btn.sizeHint().width() + 2, (
                 f"the {key} chip stretched to {btn.width()}px for a"
                 f" {btn.sizeHint().width()}px label")
+    finally:
+        destroy(win)
+
+
+def test_the_dps_tab_bottom_cards_form_aligned_columns(host):
+    """The five bottom cards are a fixed COLUMN GRID, not a per-row flow.
+
+    The default `StretchFlow` packing decides each row on its own, so five
+    cards with different minimum widths (the Top DPS card's ~749px against the
+    meter's ~656px) came out 2+1+2 at one width and 1+1+1+1+1 at the next - and
+    the lone card always stretched past the columns above and below it. Here:
+    every card has the SAME width, the columns line up (card i sits at column
+    i % columns), and no card is stretched to a taller neighbour.
+    """
+    win = QtWidgets.QMainWindow()
+    inner = QtWidgets.QWidget()
+    lay = QtWidgets.QVBoxLayout(inner)
+    lay.addWidget(host._page)
+    win.setCentralWidget(inner)
+    win.resize(1600, 900)
+    win.show()
+    host._settings_tabs._pick("DPS")
+    _dps_tab_content_widths(host)   # drains the resize -> relayout chain
+    try:
+        cards = [host._dps_diag_card, host._dps_card, host._top_dps_card,
+                 host._dummy_card, host._speedrun_card]
+        assert all(c.isVisible() for c in cards), "a bottom card is not on screen"
+        widths = {c.width() for c in cards}
+        assert len(widths) == 1, f"the grid's cards have different widths: {widths}"
+        xs = [c.x() for c in cards]
+        cols = len(set(xs))
+        assert cols > 1, "the cards are one full-width column; nothing to align"
+        assert [xs.index(x) for x in xs] == [i % cols for i in range(len(xs))], (
+            f"cards are not in ordered columns: x={xs}, columns={cols}")
+        # Natural heights, top-aligned: the shortest card is never stretched to
+        # the tallest card in the grid (the Test Dummy).
+        assert host._speedrun_card.height() < host._dummy_card.height(), \
+            "the Run Timer card was stretched to the Test Dummy card's height"
+        assert host._top_dps_card.height() < host._dummy_card.height(), \
+            "the Top DPS card was stretched to the Test Dummy card's height"
     finally:
         destroy(win)
 

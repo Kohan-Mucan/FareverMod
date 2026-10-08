@@ -369,13 +369,16 @@ class CombatRosterMixin:
         metric = getattr(self, "_cp_metric", "damage")
         is_compare = (metric == "compare")
         is_fights = (metric == "fights") or (getattr(self, "_cp_segment", "auto") == "past_fights")
+        is_records = (metric == "records")
 
         if hasattr(self, "cp_board_container"):
-            self.cp_board_container.setVisible(not (is_compare or is_fights))
+            self.cp_board_container.setVisible(
+                not (is_compare or is_fights or is_records))
         if hasattr(self, "_cp_rail_container"):
-            if is_compare or is_fights:
+            if is_compare or is_fights or is_records:
                 # The compare matrix and the fights list own the whole body:
-                # the rail has no place there, so off is unconditional.
+                # the rail has no place there, so off is unconditional. The
+                # width fit below re-shows it when a rail view returns.
                 self._cp_rail_container.setVisible(False)
             else:
                 # The damage view is the rail's home, so its visibility is the
@@ -392,7 +395,18 @@ class CombatRosterMixin:
         scroll = getattr(self, "_cp_past_scroll", None)
         if scroll is not None:
             scroll.setVisible(is_fights)
+        records = getattr(self, "_cp_records_scroll", None)
+        if records is not None:
+            records.setVisible(is_records)
 
+        if is_records:
+            # Whole-body view like the Fights list, and rendered from the SAME
+            # tick path: the board fingerprints the index, so an unchanged
+            # archive costs the guard and nothing else.
+            if hasattr(self, "cp_plotter_info"):
+                self.cp_plotter_info.setText("📈 Encounter DPS Timeline")
+            self._render_records_board()
+            return
         if is_fights:
             if hasattr(self, "cp_plotter") and hasattr(self.cp_plotter, "set_compare_players"):
                 self.cp_plotter.set_compare_players([])
@@ -511,7 +525,7 @@ class CombatRosterMixin:
                     self.cp_empty_lbl.setParent(getattr(self, "cp_class_board", None))
                 if self.cp_empty_lbl.text() != hint:
                     self.cp_empty_lbl.setText(hint)
-                self.cp_empty_lbl.show()
+                self.cp_empty_lbl.setVisible(bool(hint))
             self._hide_all_column_cards()
             self._prune_class_columns(set())
             return

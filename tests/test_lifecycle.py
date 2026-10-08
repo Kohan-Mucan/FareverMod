@@ -495,7 +495,7 @@ def test_the_gate_never_raises_on_a_detached_process():
 # from tests/test_instance_lock.py
 # ========================================================================
 
-"""Single-instance guard (fareverpal.lock): the refused-launch contract.
+"""Single-instance guard (farevermod.lock): the refused-launch contract.
 
 A second companion pointed at the same moddata folder must refuse to launch
 instead of fighting over settings.json — collection.json / settings.json are
@@ -531,7 +531,7 @@ def lock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FAREVER_SESSION_AUDIT", "1")
     if QtWidgets.QApplication.instance() is None:
         _app = QtWidgets.QApplication([])  # noqa: F841
-    return config_dir() / "fareverpal.lock"
+    return config_dir() / "farevermod.lock"
 def _fabricate_lock(path, pid: int, age_s: float = 0.0) -> None:
     """Write a well-formed (orphaned) QLockFile whose holder is `pid`."""
     path.write_text(

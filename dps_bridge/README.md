@@ -1,6 +1,6 @@
 # DPS Bridge (TL;DR)
 
-High-performance native combat bridge for FareverPal. Intercepts combat events directly from the HashLink runtime and streams them live to the companion meter.
+High-performance native combat bridge for FareverMod. Intercepts combat events directly from the HashLink runtime and streams them live to the companion meter.
 
 ---
 
@@ -39,7 +39,7 @@ unless `FAREVER_BRIDGE_RELAY=1`, so the shipped app never opens a listening
 socket nobody asked for. Force a transport with `--relay` / `--direct`.
 
 The relay socket is bound exclusively, for the same reason as the capture
-socket: on Windows `SO_REUSEADDR` would let a second FareverPal instance bind
+socket: on Windows `SO_REUSEADDR` would let a second FareverMod instance bind
 49153 too, and subscribers would silently attach to whichever won. A dropped
 subscription is routine — the app restarts capture whenever the capture mode
 changes — so the monitor reconnects instead of exiting.
@@ -50,7 +50,7 @@ owner, not a silent zero-packet wait.
 
 A second destination (`dist/dps_bridge/`) used to receive a copy of the same four
 binaries on every build. Nothing ever selected it: a frozen app reads the copy
-`FareverPal.spec` bundles into `_MEIPASS/dps_bridge/`, and a source-tree run finds
+`FareverMod.spec` bundles into `_MEIPASS/dps_bridge/`, and a source-tree run finds
 **this** folder first in the launch list
 (`ui/game_attach._hook_launch_candidates`). The build no longer writes it, so a
 `dist/dps_bridge/` left over from an older build is stale — do not ship it.
@@ -155,7 +155,7 @@ not in the Steam folder, not in `%APPDATA%`.
 
 ```
 <dps_bridge>\FAREVERMOD_DEBUG_LOG      # beside the DLL the binary loaded from
-  -> first line: D:\...\FareverPal\dps_bridge\bridge_dev.log
+  -> first line: D:\...\FareverMod\dps_bridge\bridge_dev.log
 ```
 
 The flag is re-read on every log call, so it can appear or disappear
@@ -184,7 +184,7 @@ from a red one; it used to print `[FAIL]` and still exit 0.
 **A rebuild cannot republish a DLL the game has loaded.** Windows lets a build
 overwrite a binary only while no process has it mapped, and an injected
 `farever_dps.dll` stays mapped for as long as `Farever.exe` runs — closing
-FareverPal is a detach, not an unload. So a rebuild during play used to compile
+FareverMod is a detach, not an unload. So a rebuild during play used to compile
 the new DLL, fail the `dps_bridge` copy five times, and leave the PREVIOUS build
 in place — and because the app injects from this folder first, it kept injecting
 that old binary while the log's `manifest build` line quietly named it. Nothing
@@ -426,8 +426,8 @@ carries it on both hit branches.
 ---
 
 ### How to Use
-1. **Start Farever** and launch **FareverPal** (`run.bat`).
-2. FareverPal auto-attaches and displays:
+1. **Start Farever** and launch **FareverMod** (`run.bat`).
+2. FareverMod auto-attaches and displays:
    ```
    SOURCE: LIVE — combat bridge
    ```

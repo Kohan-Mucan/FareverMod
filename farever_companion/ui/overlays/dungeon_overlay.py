@@ -44,6 +44,13 @@ _SECTION_TOGGLES_BY_KEY = {k: (a, i, ton, toff)
                            for k, a, i, ton, toff in _SECTION_TOGGLES}
 
 
+def _dg_engine_claim(entity) -> bool:
+    """True when the engine presents this unit as a boss (boss-class prefab
+    leaf) — the same claim the DPS tick reads (see `_scan_foes`). Sheet data
+    alone cannot say it: hard/heroic champion ids postdate the sheets."""
+    return "boss" in str(getattr(entity, "cls", "") or "").lower()
+
+
 def _food_item_id(name: str | None) -> str | None:
     """Stable item id behind a placed-food display name ('Plainswalker Feast'
     -> 'Feast'); None when unknown or the name never resolved."""
@@ -225,7 +232,18 @@ class DungeonOverlay(DungeonRenderMixin, DungeonLootMixin, TrackerHostMixin,
         self._dg_prev_alive = {}    # addr -> bool (alive last tick)
         self._dg_boss_prev = None   # boss HP last tick (fight-reset detection)
 
-    def _dg_classify(self, unit_id: str | None) -> str | None:
+    def _dg_classify(self, unit_id: str | None,
+                       engine_claim: bool = False) -> str | None:
+        """Kind for a nearby enemy: avoid / clone_real / boss / champion.
+
+        A CHAMPION is an engine-only boss claim — a hard/heroic champion mob
+        spawned from a boss-class prefab that the data layer has never heard
+        of (`engine_claim`: "boss" in its leaf class). There is no champion
+        flag in the files, so this is the same uncertain-claim rule the DPS
+        tracker uses: claimed by the engine but not a data-known boss. Every
+        real dungeon/rift boss is data-known (signature loot table, rift id
+        or sheet flag), so no real boss ever reads as a champion.
+        """
         if not unit_id:
             return None
         if unit_id in DG_AVOID_CLONES:
@@ -234,6 +252,8 @@ class DungeonOverlay(DungeonRenderMixin, DungeonLootMixin, TrackerHostMixin,
             return "clone_real"
         if udata.is_boss(unit_id):
             return "boss"
+        if engine_claim:
+            return "champion"
         return None
 
     @staticmethod
@@ -402,7 +422,9 @@ class DungeonOverlay(DungeonRenderMixin, DungeonLootMixin, TrackerHostMixin,
                     continue
                 if getattr(u, "is_hero", False) or getattr(u, "is_player_owned", False):
                     continue
-                if self._dg_classify(u.unit_id) in ("boss", "clone_real"):
+                if self._dg_classify(
+                        u.unit_id,
+                        engine_claim=_dg_engine_claim(u)) in ("boss", "clone_real"):
                     pool.append((u, u.dist2d(xyz[0], xyz[1])))
         except ProcError:
             pass
@@ -410,7 +432,8 @@ class DungeonOverlay(DungeonRenderMixin, DungeonLootMixin, TrackerHostMixin,
         enemies = []
         peaks = getattr(self, "_dg_hp_peaks", {})
         for e, d in pool:
-            kind = self._dg_classify(e.unit_id)
+            kind = self._dg_classify(e.unit_id,
+                                     engine_claim=_dg_engine_claim(e))
             # No dead-filter (hp=0.0 when unreadable); track peak HP per unit
             # so render can show an HP % (no MaxHealth offset).
             hp = getattr(e, "hp", 0.0) or 0.0
@@ -420,10 +443,12 @@ class DungeonOverlay(DungeonRenderMixin, DungeonLootMixin, TrackerHostMixin,
             enemies.append((e, d, kind))
         self._dg_hp_peaks = peaks
 
-        # Bosses (incl. real clones) pinned to top, then by distance.
+        # Bosses (incl. real clones) pinned to top, champions next, then by
+        # distance.
         enemies.sort(key=lambda t: (
-            0 if t[2] in ("boss", "clone_real") else 1,
-            {"boss": 0, "clone_real": 1, "avoid": 2}.get(t[2], 3),
+            0 if t[2] in ("boss", "clone_real", "champion") else 1,
+            {"boss": 0, "clone_real": 1, "champion": 2,
+             "avoid": 3}.get(t[2], 4),
             t[1],
         ))
         self._dg_enemies = enemies

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 echo ============================================================
-echo  FareverPal Companion - Test Runner
+echo  FareverMod Companion - Test Runner
 echo ============================================================
 echo.
 

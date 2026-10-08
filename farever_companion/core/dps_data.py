@@ -364,6 +364,14 @@ class SkillParse:
     damage: float = 0.0
     hit_count: int = 0
     crit_count: int = 0
+    #: Damage dealt BY critical hits, summed. `crit_count` is how often this
+    #: skill crit; this is how much of `damage` arrived critting, and the two
+    #: cannot be derived from each other - a rate says nothing about the size
+    #: of the hits behind it. Both are accumulated from the same `is_crit` flag
+    #: the crit count already uses, so they can never disagree about which hits
+    #: counted. 0.0 on any archive written before the field existed, which is
+    #: "not recorded", never "no crit damage".
+    crit_damage: float = 0.0
     min_hit: float = float("inf")
     max_hit: float = 0.0
     # --- heal channel (split into self vs group/ally) ---
@@ -383,6 +391,12 @@ class SkillParse:
     # must show the remainder rather than silently normalizing it away.
     affinity_damage: dict[str, float] = field(default_factory=dict)
     affinity_hits: dict[str, int] = field(default_factory=dict)
+    #: Crit HITS per affinity school. The same gap `crit_damage` closes, one
+    #: level down: `affinity_hits` counts the hits in a school but not how many
+    #: of them crit, so "was my Physical damage critting as often as my Fire"
+    #: could not be asked of an archive. Kept alongside the crit count rather
+    #: than folded into `affinity_hits` so both readers stay unchanged.
+    affinity_crits: dict[str, int] = field(default_factory=dict)
     # Damage that arrived under a DERIVED row of this skill and was folded in
     # here rather than getting its own row: child id -> that child's OWN parse.
     # The bleed a Bonethrow applies, the ticks a passive's status deals.
@@ -393,6 +407,14 @@ class SkillParse:
     # were added above), so `subskills` is a breakdown of the parent, never an
     # addition to it.
     subskills: dict[str, "SkillParse"] = field(default_factory=dict)
+
+    # True when this row's damage was DEALT TO this player by somebody else's
+    # shared buff, rather than cast by them: the boost chunks a party buff like
+    # Swarmstrike Accord produces, which the bridge credits to the player
+    # carrying the buff's Status object. The damage is genuinely theirs - they
+    # were hit by the buff - but they never cast the skill, so the meter badges
+    # the row "from group" instead of leaving it reading as their own cast.
+    from_group_buff: bool = False
 
     @property
     def total(self) -> float:
@@ -535,6 +557,7 @@ def _skill_to_dict(sp: SkillParse) -> dict:
         "damage": round(sp.damage, 1),
         "hit_count": sp.hit_count,
         "crit_count": sp.crit_count,
+        "crit_damage": round(sp.crit_damage, 1),
         "min_hit": round(sp.min_hit, 1) if (sp.hit_count > 0 and sp.min_hit != float("inf")) else 0.0,
         "max_hit": round(sp.max_hit, 1),
         "heals": round(sp.heals, 1),
@@ -547,6 +570,7 @@ def _skill_to_dict(sp: SkillParse) -> dict:
         "taken_count": sp.taken_count,
         "affinity_damage": {a: round(v, 1) for a, v in sp.affinity_damage.items()},
         "affinity_hits": dict(sp.affinity_hits),
+        "affinity_crits": dict(sp.affinity_crits),
         # The folded sub-skills ride along, or an ARCHIVED fight loses the
         # breakdown the live meter shows: the parent row's number stayed whole
         # while the explanation for 250 of it disappeared, so DPS Analysis and
@@ -554,6 +578,10 @@ def _skill_to_dict(sp: SkillParse) -> dict:
         # Absent on archives written before the field existed -> empty.
         "subskills": {cid: _skill_to_dict(child)
                       for cid, child in sp.subskills.items()},
+        # Absent on archives written before the field existed -> False, which
+        # reads as "the player cast it", i.e. exactly what those old archives
+        # recorded and all they can honestly claim.
+        "from_group_buff": bool(sp.from_group_buff),
         "last_hit_ts": round(sp.last_hit_ts, 2) if sp.last_hit_ts > 0 else 0.0,
     })
 
@@ -563,6 +591,9 @@ def _skill_from_dict(d: dict) -> SkillParse:
     sp.damage = float(d.get("damage", 0.0))
     sp.hit_count = int(d.get("hit_count", 0))
     sp.crit_count = int(d.get("crit_count", 0))
+    # Absent on archives written before the field existed -> 0.0, i.e. "not
+    # recorded" rather than "no crit damage" (see the field's note).
+    sp.crit_damage = float(d.get("crit_damage", 0.0))
     raw_min = d.get("min_hit")
     sp.min_hit = float(raw_min) if (raw_min is not None and float(raw_min) > 0) else float("inf")
     sp.max_hit = float(d.get("max_hit", 0.0))
@@ -581,12 +612,14 @@ def _skill_from_dict(d: dict) -> SkillParse:
     # Absent on archives written before the field existed -> empty, not an error.
     sp.affinity_damage = {str(a): float(v) for a, v in (d.get("affinity_damage") or {}).items()}
     sp.affinity_hits = {str(a): int(v) for a, v in (d.get("affinity_hits") or {}).items()}
+    sp.affinity_crits = {str(a): int(v) for a, v in (d.get("affinity_crits") or {}).items()}
     # Folded sub-skills, each its own parse (see _skill_to_dict). Older
     # archives have no such key -> empty, never an error: the parent's damage
     # is already whole, so the row stays correct and only the breakdown is
     # missing.
     sp.subskills = {str(cid): _skill_from_dict(child)
                     for cid, child in (d.get("subskills") or {}).items()}
+    sp.from_group_buff = bool(d.get("from_group_buff", False))
     sp.last_hit_ts = float(d.get("last_hit_ts", 0.0))
     return sp
 
@@ -790,11 +823,30 @@ class CombatSession:
         # known boss is written beside that boss's other runs rather than into
         # the day-wide file, so a folder reads as one boss and its packs.
         self.boss_label: str = ""
-        # The instance DIFFICULTY the game itself reported for this fight
-        # ("normal" / "hard" / "heroic"), or "" when it could not be read.
+        # The instance DIFFICULTY the game itself reported for this fight, as
+        # the stored token ("normal" / "hard" / "heroic"), or "" when it could
+        # not be read.
         # Never the manual fallback: it is written into the log's FILE NAME,
         # where a guess would be permanent (see `game_state.instance_mode`).
         self.mode: str = ""
+        # The GAME BUILD this fight was recorded on, or "" when it could not be
+        # read. Stamped once per session as it is archived (see
+        # `DpsTrackerHistory.archive_current_encounter`), from the installed
+        # client's executable - never from the companion, whose own version
+        # answers nothing here: the reader is whatever build is installed the
+        # day the file is opened. This is the fact that answers "these numbers
+        # went wrong after a patch" months later, so an unknown build is
+        # recorded as absent rather than guessed.
+        self.game_version: str = ""
+        # The LARGEST party roster seen while this fight was live: one
+        # ``{"name", "hero_class", "is_me"}`` per member, INCLUDING members who
+        # dealt no damage. The archived player rows are culled to players that
+        # actually did something (see `is_active_player`), so without this a
+        # reloaded fight can only say how many scored, never who was present or
+        # how many the fight was tuned for. Widened but never shrunk (see
+        # `_seed_group_roster`) and cleared by `reset()`, so one fight's party
+        # cannot leak into the next.
+        self.roster: list[dict] = []
         # The TRASH pack breakdown (see PackSplit): one entry per pull, each
         # with its own per-mob rows. A trash session covers a whole dungeon,
         # so its flat `targets` above cannot say which pull a mob died in.
@@ -1246,6 +1298,7 @@ class CombatSession:
         sp.hit_count += 1
         if is_crit:
             sp.crit_count += 1
+            sp.crit_damage += damage
 
     def _boss_row_name(self) -> str:
         """The boss's row name: the meter's label without its crown.
@@ -1273,7 +1326,8 @@ class CombatSession:
                    target_max_hp: float, damage: float, caster_name: str = "You",
                    is_me: bool = True, skill_id: str = "Axe_Base_Attack",
                    skill_name: str = "Attack", is_crit: bool = False,
-                   when: float = 0.0, affinity: str = ""):
+                   when: float = 0.0, affinity: str = "",
+                   from_group_buff: bool = False):
         now = when if when > 0.0 else time.time()
         # A trash pull boundary is this session's own pause: the tracker pauses
         # it when the game leaves combat or the damage lull expires, and the
@@ -1380,6 +1434,14 @@ class CombatSession:
         if skill_id not in p.skills:
             p.skills[skill_id] = SkillParse(skill_id=skill_id, name=skill_name)
         sp = p.skills[skill_id]
+        # Badge the row when the damage was dealt by somebody ELSE's shared
+        # buff. Two facts have to agree, because either alone mislabels: the
+        # caller has seen that buff on more than one player live, and the row
+        # is a derived one whose parent this player never cast. The first fact
+        # is what keeps a solo self-buff - a player who is the only carrier -
+        # from being called a group buff when it was entirely their own doing.
+        if from_group_buff:
+            sp.from_group_buff = True
         sp.damage += damage
         sp.hit_count += 1
         sp.min_hit = min(sp.min_hit, damage)
@@ -1391,9 +1453,12 @@ class CombatSession:
             child_sp.max_hit = max(child_sp.max_hit, damage)
             if is_crit:
                 child_sp.crit_count += 1
+                child_sp.crit_damage += damage
             if affinity:
-                child_sp.affinity_damage[affinity] =                     child_sp.affinity_damage.get(affinity, 0.0) + damage
-                child_sp.affinity_hits[affinity] =                     child_sp.affinity_hits.get(affinity, 0) + 1
+                child_sp.affinity_damage[affinity] = child_sp.affinity_damage.get(affinity, 0.0) + damage
+                child_sp.affinity_hits[affinity] = child_sp.affinity_hits.get(affinity, 0) + 1
+                if is_crit:
+                    child_sp.affinity_crits[affinity] = child_sp.affinity_crits.get(affinity, 0) + 1
             child_sp.last_hit_ts = now
             sp.subskills[folded] = child_sp
             # The child is folded, not counted twice: it must not keep a slot
@@ -1402,9 +1467,12 @@ class CombatSession:
             p.skills.pop(folded, None)
         if is_crit:
             sp.crit_count += 1
+            sp.crit_damage += damage
         if affinity:
             sp.affinity_damage[affinity] = sp.affinity_damage.get(affinity, 0.0) + damage
             sp.affinity_hits[affinity] = sp.affinity_hits.get(affinity, 0) + 1
+            if is_crit:
+                sp.affinity_crits[affinity] = sp.affinity_crits.get(affinity, 0) + 1
         sp.last_hit_ts = now
 
         sec = int(now - (self.start_time or now))
@@ -1549,6 +1617,12 @@ class CombatSession:
         self.players.clear()
         self.boss_row = None
         self.boss_killed = False
+        # The roster is a per-FIGHT fact, so a reset drops it: the session
+        # object is reused for the next fight, and a five-player party from
+        # this one must not describe the next. `game_version` deliberately
+        # stays - the client does not change mid-session, and the archive
+        # stamps it again anyway.
+        self.roster.clear()
         self.targets.clear()
         self.packs.clear()
         self._pack_open = None
@@ -1716,6 +1790,11 @@ def _session_to_dict(s: CombatSession) -> dict:
         "deaths": [[round(float(t), 1), str(n)] for t, n in s.deaths],
         "burst_peak": round(s.burst_peak, 1),
         "burst_peak_time": round(s.burst_peak_time, 1),
+        # The party the fight was played with, and the client it was played on.
+        # Both are trimmed by `_without_defaults` when empty, so an old archive
+        # and a solo test keep the shape they always had.
+        "roster": [dict(m) for m in s.roster],
+        "game_version": s.game_version,
     }
     if targets:
         out["targets"] = targets
@@ -1757,6 +1836,11 @@ def _session_from_dict(d: dict) -> CombatSession:
     _mode = d.get("mode")
     s.mode = _mode.lower() if isinstance(_mode, str) \
         and _mode.lower() in ("normal", "hard", "heroic") else ""
+    # The party and the client build (see their field notes). Absent on older
+    # archives -> empty, which is "not recorded": a reader must show no party
+    # line rather than infer a party of one from it.
+    s.roster = [dict(m) for m in (d.get("roster") or []) if isinstance(m, dict)]
+    s.game_version = str(d.get("game_version") or "")
     # Absent on every archive written before kills were flagged; False is the
     # right reading of those either way — an old run's fate is unknown, and
     # guessing it was a kill would put a wipe into a personal best.

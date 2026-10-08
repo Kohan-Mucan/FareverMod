@@ -482,6 +482,51 @@ def test_zone_in_only_builds_huds_that_can_exist_inside(monkeypatch):
     assert {"entity", "map"} <= set(built), built
 
 
+def test_a_window_that_works_off_screen_is_built_where_it_cannot_be_seen(monkeypatch):
+    """"May this be SEEN here" and "must this EXIST here" are two answers.
+
+    The Run Timer's HIDDEN ticks are the only witness of the outside half of
+    the zone-in edge it starts RUN on (`overlay_rules.HudPlace.build_anywhere`,
+    and speedrun_overlay._tick tracks the edge before its visibility gate).
+    Dropping it from the staggered build because its place does not exist where
+    the player stands deleted that witness, and the window was then created on
+    the very tick the edge had already passed — a clock that can never start.
+    So it is built at locate, hidden, and left to the loop.
+
+    The Dungeon HUD is the control: instance-only too, but its off-screen ticks
+    do no work, so it keeps the ordinary rule and is NOT built here. That is the
+    distinction the row encodes — exist-to-work, not "build everything early".
+
+    The production `_pump_stagger` applies the gate (the test-only
+    `_drain_stagger_sync` bypasses it), so this drives that.
+    """
+    proc, ui = ui_with_windows(shifted_fields(), ())
+    model = _tickable_model(proc, ui)                       # the open world
+    mgr, _overlays, _ = _manager(
+        monkeypatch,
+        _settings(open_overlay_dungeon=True, open_overlay_speedrun=True,
+                  open_overlay_dps=True), model, False)
+    for k in om.HUD_OVERLAYS:
+        mgr.overlays[k] = None                              # nothing built yet
+    built: list[str] = []
+
+    def _fake_request(key, on):
+        built.append(key)
+        if on:
+            mgr.overlays[key] = _Overlay()
+
+    monkeypatch.setattr(mgr, "request", _fake_request)
+
+    for _ in range(8):
+        mgr._combat_tick()                                  # offers one window
+        if mgr._stagger_queue:
+            mgr._pump_stagger()                             # ...and builds it
+
+    assert "speedrun" in built, built
+    assert "dungeon" not in built, built                    # no place for it here
+    assert "dps" in built, built                            # its row is everywhere
+
+
 def test_a_locate_flap_does_not_re_request_hidden_windows(monkeypatch):
     """Hidden is not missing: only windows that do not EXIST are re-queued.
 

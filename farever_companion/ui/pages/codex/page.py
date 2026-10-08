@@ -229,12 +229,19 @@ class CodexPageBase:
         return self._last_hidden_frame
 
     def _build_codex_others_sub_bar(self) -> QtWidgets.QFrame:
-        """All/Shop/Unreleased/Misc status toggles for the Others tab — the
+        """All/Shop/Unreleased/Misc/NPC/Reputation toggles for the Others tab — the
         mounts/gliders type lists moved to the Collection tab, so Others is
         now the 'not in your collection yet' bucket: cash-shop items, content
         not released yet, and misc/todo placeholders. Same look/logic as the
         Dungeon view switcher: flat exclusive checkable toggles in the grid
-        header (the old boxed 2x2 sub-tab frame is gone)."""
+        header (the old boxed 2x2 sub-tab frame is gone).
+
+        'NPC' is the one chip that swaps the grid to a LIST: the placed world
+        NPCs (`npc_list.NpcListView`) have no codex cards at all, so it lists
+        them from the world index instead of filtering the card grid.
+        'Reputation' is the other one: reputation ranks
+        (`rep_list.RepListView`) are not items either, so they list from the
+        sheets the same way."""
         self._others_sub_bar = QtWidgets.QFrame()
         self._others_sub_bar.setStyleSheet("QFrame { background: transparent; border: 0; }")
         sub_lay = QtWidgets.QHBoxLayout(self._others_sub_bar)
@@ -244,7 +251,8 @@ class CodexPageBase:
         self._others_btn_group = QtWidgets.QButtonGroup(self)
         self._others_btn_group.setExclusive(True)
         self._others_sub_btns = {}
-        for label in ("All", "Shop", "Unreleased", "Misc"):
+        for label in ("All", "Shop", "Unreleased", "Misc", "NPC",
+                        "Reputation"):
             btn = QtWidgets.QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedHeight(24)
@@ -252,6 +260,7 @@ class CodexPageBase:
             btn.setStyleSheet(_CODEX_TOGGLE_QSS)
             if label == "All":
                 btn.setChecked(True)  # default to All on the Others tab
+            btn.clicked.connect(self._on_others_sub_toggled)
             self._others_btn_group.addButton(btn)
             self._others_sub_btns[label] = btn
             sub_lay.addWidget(btn)

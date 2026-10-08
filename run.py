@@ -217,7 +217,7 @@ if __name__ == "__main__":
             app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
             QtWidgets.QMessageBox.critical(
                 None, "Startup Error",
-                f"Farever Pal hit an error during startup:\n\n{e}\n\n{tb}")
+                f"FareverMod hit an error during startup:\n\n{e}\n\n{tb}")
         except Exception:
             traceback.print_exc()
         sys.exit(1)

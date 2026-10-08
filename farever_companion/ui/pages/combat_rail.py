@@ -25,24 +25,18 @@ from ..combat import (
 from .combat_rail_popup import _SkillWeaponPopup  # noqa: F401
 
 def fit_rail_to_page(panel) -> None:
-    """Show or hide the detail rail to fit the page it shares with the roster.
+    """Keep the detail rail visible next to the roster, whatever the width.
 
-    Below the threshold the roster and the rail cannot both exist, and the rail
-    is the one that goes. The alternative is not "the rail gets smaller" — its
-    minimum is set by the widest skill name and the widest cell in the table.
-    The alternative is that the page overflows, and the Combat page is inserted
-    straight into the QStackedWidget (ControlPanel._select_nav does not wrap it
-    in a scroll area), so the overflow is clipped at the page's own edge: no
-    scrollbar, no warning, the tail of the skills table and the DMG TYPE bar
-    above it just stopping mid-number.
+    The rail used to auto-hide below a measured threshold so a narrow page
+    would not clip the skills table's tail. Hiding the whole inspector to
+    save the table was the wrong trade — a missing rail reads as broken, and
+    no notice or override button fixes a pane the player expects to always be
+    there. So the rail stays, and the narrow case is handled where it belongs:
+    the skills table scrolls horizontally (see sync_table_minimum_width),
+    which is recoverable where a clipped tail is not.
 
-    The threshold is summed from the two panes, NOT read off the page.
-    ``page.minimumSizeHint()`` is the obvious thing to measure and it is wrong
-    here: a hidden widget contributes nothing to a layout's minimum, so hiding
-    the rail shrinks the page's own minimum, which then argues for showing the
-    rail again at a width it does not fit. Dragging the window across that
-    boundary makes the rail stutter on and off. The panes are the real inputs
-    and they do not care what the other one is doing.
+    The threshold is still measured and kept on ``_cp_rail_min_page_width``
+    for the callers that report it, but nothing hides on it anymore.
     """
     page = getattr(panel, "_cp_page", None)
     rail_container = getattr(panel, "_cp_rail_container", None)
@@ -58,15 +52,11 @@ def fit_rail_to_page(panel) -> None:
             lay.activate()
     margins = page.layout().contentsMargins() if page.layout() else None
     pad = (margins.left() + margins.right()) if margins else 0
-    need = max(
+    panel._cp_rail_min_page_width = max(
         CP_RAIL_AUTO_MIN_WIDTH,
         left_col.minimumSizeHint().width() + rail_box.minimumWidth()
         + split.handleWidth() + pad)
-    panel._cp_rail_min_page_width = need
-    if page.width() < need:
-        if not rail_container.isHidden():
-            rail_container.hide()
-    elif rail_container.isHidden():
+    if rail_container.isHidden():
         rail_container.show()
 
 
@@ -691,8 +681,13 @@ class CombatRailMixin:
             row = self._cp_rail_skill_widgets.get(sp.skill_id)
             if row is None:
                 row = SkillRow(density="detailed", parent=self.cp_skills_container)
-                row.set_skill(sp.skill_id, sp.name)
                 self._cp_rail_skill_widgets[sp.skill_id] = row
+            # Re-stated every tick, not only on creation: rows are pooled per
+            # skill id, so a "group" badge that arrived mid-fight would never
+            # appear on the reused widget, and a row that stopped being one
+            # would keep saying it was.
+            row.set_skill(sp.skill_id, sp.name,
+                          from_group_buff=bool(getattr(sp, "from_group_buff", False)))
             self._place_rail_row(row, slot)
             if row.isHidden():
                 row.show()

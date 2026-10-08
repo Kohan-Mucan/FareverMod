@@ -33,7 +33,9 @@ itself, touches no offsets, and never writes to the game.
 from __future__ import annotations
 
 import math
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from . import game_state
@@ -55,12 +57,32 @@ from .dps_data import (
 from .dps_tracker_attribution import _in_instance
 from .dps_tracker_events import (EVENT_ATTRIBUTED, EVENT_DROPPED,
                                  EVENT_FILTERED, EVENT_UNRESOLVED)
+from .status_attrib import status_kind_carriers
+
+
+def _snapshot_status_carriers(tracker, tick) -> dict[str, list]:
+    try:
+        m = tracker.model
+        if m is None or m.proc is None or m.hl is None:
+            return {}
+        return status_kind_carriers(m.proc, m.hl, tick.heroes)
+    except Exception:
+        return {}
+
 
 # One Activity-Log line per failing capture operation per window (see
 # _log_capture_failure). The drain runs every tick -- ~10 Hz, from two threads --
 # so an unthrottled report of a permanently broken reader would bury the log it
 # exists to be findable in.
 CAPTURE_FAIL_LOG_S = 30.0
+
+# One Activity-Log line when a single update() pass -- or one of its phases --
+# runs long enough to explain a "DPS drain stalled" canary (the worker's
+# STALL_LOG_S is 5 s). A tick is normally a few ms, so anything past this is a
+# scene read or a capture call stuck on the game, not scheduling noise; naming
+# the phase and the owning thread turns the canary's "worker thread starved?"
+# guess into a fact the next live report can be read from.
+SLOW_TICK_LOG_S = 3.0
 
 
 @dataclass
@@ -110,11 +132,78 @@ class DpsTrackerTick:
         # skipping a tick is always safe (capture cursors make a double-drain
         # a no-op anyway; the next pass drains whatever accumulated).
         if not self._update_lock.acquire(blocking=False):
+            self._note_skipped_tick()
             return
+        started = time.perf_counter()
         try:
             self._update_impl()
         finally:
+            elapsed = time.perf_counter() - started
+            phases = getattr(self, "_tick_phase_times", None)
             self._update_lock.release()
+        self._report_slow_tick(elapsed, phases)
+
+    @contextmanager
+    def _phase(self, name: str):
+        """Time one phase of the tick into ``self._tick_phase_times``."""
+        t = time.perf_counter()
+        try:
+            yield
+        finally:
+            times = getattr(self, "_tick_phase_times", None)
+            if times is None:
+                times = self._tick_phase_times = {}
+            times[name] = time.perf_counter() - t
+
+    def _note_skipped_tick(self) -> None:
+        """Remember that a pass was refused the guard (see _report_slow_tick).
+
+        The canary in the drain worker only sees ITS thread; this is the other
+        half: when one thread owns update() long enough that the others keep
+        being refused, the holder is the stall, and this records when the
+        refusals began so the next owner can name the wait.
+        """
+        try:
+            if getattr(self, "_tick_skip_since", None) is None:
+                self._tick_skip_since = time.monotonic()
+            self._tick_skips = getattr(self, "_tick_skips", 0) + 1
+        except Exception:
+            pass
+
+    def _report_slow_tick(self, elapsed: float, phases) -> None:
+        """Name a slow tick or a guard the other threads waited on.
+
+        Never raises: this runs on the drain path, where a logging fault must
+        not become a capture fault. Throttled to one line per window so a
+        permanently slow phase does not bury the log.
+        """
+        try:
+            now = time.monotonic()
+            if now - getattr(self, "_slow_tick_at", 0.0) < SLOW_TICK_LOG_S:
+                return
+            skip_since = getattr(self, "_tick_skip_since", None)
+            skips = getattr(self, "_tick_skips", 0)
+            self._tick_skip_since = None
+            self._tick_skips = 0
+            thread = threading.current_thread().name
+            if elapsed >= SLOW_TICK_LOG_S:
+                worst, took = "", 0.0
+                for name, secs in (phases or {}).items():
+                    if secs > took:
+                        worst, took = name, secs
+                self._slow_tick_at = now
+                self._log_activity(
+                    f"Top DPS: slow tick {elapsed:.1f}s on {thread} "
+                    f"(slowest {worst or 'phase?'} {took:.1f}s) — a wide scene "
+                    "read or a stuck capture call; the meter lags by that much")
+            elif skip_since is not None and now - skip_since >= SLOW_TICK_LOG_S:
+                self._slow_tick_at = now
+                self._log_activity(
+                    f"Top DPS: update pass held the guard {now - skip_since:.1f}s "
+                    f"({skips} tick(s) skipped, now on {thread}) — the other "
+                    "driver was starved while it ran")
+        except Exception:
+            pass
 
     def _update_impl(self):
         """One tick, phase by phase (the module docstring lists them).
@@ -129,15 +218,19 @@ class DpsTrackerTick:
         m = self.model
         if m is None:
             return
+        self._tick_phase_times = {}
 
         src = self.source
         if src is not None:
-            self._start_capture(src)
+            with self._phase("_start_capture"):
+                self._start_capture(src)
 
         pa = getattr(m, "player_addr", None)
         now = time.time()
-        in_instance_now = self._watch_zone_edge(m, pa, now)
-        tick = self._scan_scene(m, pa, src, in_instance_now, now)
+        with self._phase("_watch_zone_edge"):
+            in_instance_now = self._watch_zone_edge(m, pa, now)
+        with self._phase("_scan_scene"):
+            tick = self._scan_scene(m, pa, src, in_instance_now, now)
 
         # A second stamp for the react half: the scan above can block for
         # milliseconds on a wide dungeon read, and nothing below -- the events
@@ -145,14 +238,21 @@ class DpsTrackerTick:
         # backdated by it (see the module docstring).
         now = time.time()
         tick.now = now
-        self._resolve_engagement(tick, now)
-        self._consume_events(src, tick, now)
-        self._watch_deaths(pa, tick, in_instance_now, now)
+        with self._phase("_resolve_engagement"):
+            self._resolve_engagement(tick, now)
+        with self._phase("_consume_events"):
+            self._consume_events(src, tick, now)
+        with self._phase("_watch_deaths"):
+            self._watch_deaths(pa, tick, in_instance_now, now)
         # Authoritative classes win over record-time skill guesses.
-        self._sync_known_classes()
-        self._end_boss_if_over(tick, now)
-        self._auto_pause_lull(tick, now)
-        self._trace_board_state()
+        with self._phase("_sync_known_classes"):
+            self._sync_known_classes()
+        with self._phase("_end_boss_if_over"):
+            self._end_boss_if_over(tick, now)
+        with self._phase("_auto_pause_lull"):
+            self._auto_pause_lull(tick, now)
+        with self._phase("_trace_board_state"):
+            self._trace_board_state()
 
     def _start_capture(self, src) -> None:
         """Bring the selected engine up, if it isn't already.
@@ -960,7 +1060,10 @@ class DpsTrackerTick:
         neither costs a second walk of the scene.
 
         Guarded so it cannot fire mid-pull: it needs a live trash run with
-        damage, no DUMMY test, no boss damage yet, and a real measurement.
+        damage, no DUMMY test, no boss damage yet, a real measurement - and
+        never an uncertain engine claim: a boss-flagged champion standing
+        inside the clear range is still trash, and "approaching" it must not
+        archive and reset the run.
         "No boss damage yet" rather than "no boss fight" because the boss
         entity is loaded from the moment the zone opens — `_engage_boss` can
         have engaged it while the player was still across the instance, so a
@@ -968,6 +1071,8 @@ class DpsTrackerTick:
         for. Once it fires the trash session is empty, so it cannot re-fire.
         """
         if self.in_dummy_fight:
+            return
+        if getattr(self, "_boss_claim_uncertain", False):
             return
         if float(getattr(self.boss_session, "group_damage", 0.0) or 0.0) > 0.0:
             return          # the boss pull is genuinely under way
@@ -1073,24 +1178,25 @@ class DpsTrackerTick:
         if not tick.boss_present or self.in_boss_fight:
             return
         b_addr, b_name, b_hp = tick.boss_present
-        # An engine-only boss claim (a hard/heroic champion mob) still gets a
-        # boss board - the player is hitting SOMETHING and those numbers are
-        # real - but it must not archive the trash run. Archiving is what made
-        # one fight read as a dozen rows and reset the meter per pack
-        # (reported live 2026-10-03, hard and heroic). The declared boss, or a
-        # boss the data layer knows, still splits the fight as before.
-        if (getattr(self, "_boss_claim_uncertain", False)
-                and self.trash_session.group_damage > 0):
+        if getattr(self, "_boss_claim_uncertain", False):
+            # An engine-only boss claim (a hard/heroic champion mob in an
+            # instance that names no boss) never opens a boss fight: it is
+            # trash with a flag bit, so its damage stays in the trash run,
+            # the trash timer keeps going, and no per-pack "boss" row is
+            # archived. Opening the fight is what flipped the board to a
+            # short boss timer mid-trash and split the logs once per pack
+            # (live 2026-10-10: 2 min boss board inside a 7 min trash run).
+            # The declared boss, or a boss the data layer knows, still
+            # splits the fight as before.
             if callable(self.log_line):
                 try:
                     self.log_line(
                         f"Top DPS: '{b_name}' looks boss-flagged but the "
-                        "instance names no boss - keeping the trash run open "
-                        "instead of splitting the fight here")
+                        "instance names no boss - keeping it on the trash run")
                 except Exception:
                     pass
-            self.trash_session.close_pack()
-        elif self.trash_session.group_damage > 0 and self._boss_close_due():
+            return
+        if self.trash_session.group_damage > 0 and self._boss_close_due():
             if self.trash_session.state == "COMBAT":
                 self.trash_session.pause()
             # Seal the last pack BEFORE the archive deep-copies the session,
@@ -1241,6 +1347,7 @@ class DpsTrackerTick:
         attributed = 0
         unresolved = 0
         filtered = 0
+        self._buff_snap = _snapshot_status_carriers(self, tick)
         for ev in events:
             try:
                 disposition = self._apply_event(

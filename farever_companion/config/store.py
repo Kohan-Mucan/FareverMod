@@ -557,6 +557,9 @@ _PROP_MAP: dict[str, tuple[str, str]] = {
     # Codex Options
     "codex_compact": ("codex_options", "compact"),
     "codex_pets_compact": ("codex_options", "pets_compact"),
+    # Codex NPC directory's rail view button (the family and zone buttons are not
+    # booleans - see `codex_npc_role` / `codex_npc_zones_off` in model.py)
+    "codex_npc_show_debug": ("codex_npc_options", "show_debug"),
     # App / Core Options
     "auto_attach": ("app_options", "auto_attach"),
     "click_through": ("app_options", "click_through"),

@@ -36,7 +36,7 @@ if not defined NO_COLOR (
 )
 
 echo %C_HEAD%=======================================================%C_RESET%
-echo  FareverPal DPS Bridge: Build All Components
+echo  FareverMod DPS Bridge: Build All Components
 echo %C_HEAD%=======================================================%C_RESET%
 echo.
 echo Builds the active bridge binaries (farever_dps.dll + injector, dinput8.dll
@@ -88,7 +88,7 @@ REM rebuilt which binary.
 REM
 REM This is the BUILD log. It is not the app's runtime bridge log, which
 REM core/bridge_log.py writes to this same folder as bridge_dev.log.
-> "%BUILD_LOG%" echo === FareverPal DPS bridge build - %DATE% %TIME% ===
+> "%BUILD_LOG%" echo === FareverMod DPS bridge build - %DATE% %TIME% ===
 >>"%BUILD_LOG%" echo === builder: %HOOKS_BUILD%
 >>"%BUILD_LOG%" echo.
 

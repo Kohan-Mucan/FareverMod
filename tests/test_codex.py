@@ -387,6 +387,38 @@ def test_dungeon_cell_tooltip_shows_only_extra_info():
     assert "no entrance location found" in cell.toolTip().lower()
 
 
+def test_dungeon_list_hides_rows_that_name_no_dungeon():
+    """The dungeon list is the only surface that renders EVERY payload row, so
+    it used to show the boss-less POI `Z1_POI_Dungeon_ManfishGeyser` - no name,
+    no boss, no entrance zone, no location, only a level - as a bare `?  Lv 10`.
+    A row that names nothing is not a dungeon the app can show or track, and the
+    rows that do name one are listed exactly as before."""
+    from farever_companion.data import dungeons
+    from farever_companion.ui.pages.codex.dungeon_list import DungeonListView
+
+    # the rule itself, on the row's own shape (independent of today's payload)
+    assert not dungeons.is_listable(
+        {"id": "Z1_POI_Dungeon_ManfishGeyser", "kind": "dungeon", "level": 10,
+         "ambient": "Default", "faction": "Manfish", "flags": 32})
+    # a name, a boss id or a boss name is enough to be listed
+    assert dungeons.is_listable({"id": "x", "name": "Cheese Station"})
+    assert dungeons.is_listable({"id": "x", "boss_id": "Nepsilon"})
+    assert dungeons.is_listable({"id": "x", "boss_name": "Nepsilon"})
+
+    rows = dungeons.load_dungeons()
+    listed_ok = {d["id"] for d in rows if dungeons.is_listable(d)}
+    view = DungeonListView(_UntrackPage(_ToggleTracker()))
+    listed = {c.dungeon["id"] for c in view._cells}
+    assert listed == listed_ok
+    assert len(view._cells) == len(listed_ok)
+    # the reported row is not a cell, whether or not a rebuild ships it again
+    assert "Z1_POI_Dungeon_ManfishGeyser" not in listed
+    # and no cell is left rendering the '?' placeholder as its boss line
+    for c in view._cells:
+        assert c.dungeon.get("boss_name") or c.dungeon.get("boss_id") \
+            or c.dungeon.get("name"), c.dungeon["id"]
+
+
 def test_untrack_dungeon_clears_pin():
     """Same toggle behavior on the Dungeon List: the second click on a
     tracked dungeon row untracks it and clears its entrance pin."""
@@ -407,6 +439,39 @@ def test_untrack_dungeon_clears_pin():
     assert not tracker.is_tracked(kind, key)
     assert page.clears >= 1
     assert page._codex_map_widget.pins == []
+
+
+def test_each_rift_row_tracks_the_gate_in_its_own_zone():
+    """Both rifts resolve to BOTH gates (they share the one "Rifts" entrance
+    zone), so `coords[0]` is always the Z2 Krisomal gate: every rift row used
+    to track and pin that same spot, putting the Z1 rift in the wrong zone.
+    Each rift row must track the gate in its own zone."""
+    from farever_companion.data import dungeons
+    from farever_companion.geo import pois as geo_pois
+
+    page = _UntrackPage(_Tracker())
+    rifts = [d for d in dungeons.load_dungeons()
+             if d.get("entrance_zone") == "Rifts"]
+    assert len(rifts) == 2
+
+    keys = {}
+    for d in rifts:
+        got = page._dungeon_track_key(d)
+        assert got is not None, d["id"]
+        kind, key = got
+        assert kind == "rift"
+        keys[d["id"]] = key
+
+    # Two rifts, two different gates — not one shared pin.
+    assert len(set(keys.values())) == len(rifts), keys
+    for d in rifts:
+        zone = dungeons.zone_tag(d)
+        gate = next(p for p in geo_pois.load_pois()
+                    if p.sub_kind == "rift"
+                    and dungeons.zone_tag_from_zone_id(p.zone or "") == zone)
+        assert keys[d["id"]].split("|")[-1] == gate.id, (d["id"], keys[d["id"]])
+        assert keys[d["id"]].split("|")[0] == \
+            f"{float(gate.x):.1f},{float(gate.y):.1f},{float(gate.z):.1f}"
 
 
 # ======================================================================
@@ -1254,6 +1319,35 @@ def test_group_bar_buttons_show_family_counts():
     assert shop.property("groupKey") == "Shop"
 
 
+def test_the_collection_family_bar_wraps_six_to_a_row():
+    """The family bar is two tidy lines, not one row that wraps where the
+    window ends.
+
+    Pets holds twelve keys (All + eleven families: StinkBug, Frog, Turtle,
+    Squirrel, DemonDog, Goat, Sheep, Ladybug, Lizard, Rabbit, Shop), which read
+    as one long row and re-flowed whenever the window changed width. It is a
+    fixed six-wide grid now: the first six keys are the first line, the seventh
+    starts the second, and a chip never moves because the window moved. Mounts
+    (14) and Gliders (12) share the same six so all three sub-views break at the
+    same place.
+    """
+    page = _FakeGridPage()
+    page._build_codex_group_sub_bar()
+    for sub_tag, expected in (("pets", 12), ("gliders", 12), ("mounts", 14)):
+        page._rebuild_codex_group_bar(sub_tag)
+        lay = page._group_sub_lay
+        assert lay.count() == expected, sub_tag
+        keys = ["All"] + [k for k, _c in page._codex_group_counts(sub_tag)]
+        assert len(keys) == expected, sub_tag
+        cells = {lay.getItemPosition(lay.indexOf(page._group_sub_btns[k]))[:2]
+                 for k in keys}
+        assert cells == {(i // 6, i % 6) for i in range(expected)}, sub_tag
+        # read in order, the keys land six to a line
+        assert [lay.getItemPosition(lay.indexOf(page._group_sub_btns[k]))[:2]
+                for k in keys] == [(i // 6, i % 6) for i in range(expected)], \
+            sub_tag
+
+
 def test_group_counts_follow_visible_hidden_status():
     """The chip counts respect the Visible/Hidden status filter: VISIBLE
     counts active cards per family, HIDDEN counts hidden ones, ALL counts
@@ -1470,3 +1564,1087 @@ def test_unit_icon_reads_the_cards_own_art_key():
     assert codex.unit_icon("DemonHunterMira") == "DemonHunterMira"
     assert codex.unit_icon("") == ""
     assert codex.unit_icon(None) == ""
+
+
+# ======================================================================
+# test_codex_npc_list  — the Other tab's 'NPC' filter
+# ======================================================================
+
+from farever_companion.geo import pois as geo_pois  # noqa: E402
+from farever_companion.ui.pages.codex.npc_list import (  # noqa: E402
+    NpcListView, NpcMixin, npc_rows)
+
+
+class _NpcPage(NpcMixin, CodexMapUiMixin):
+    """Page with the real NPC track/plot handlers plus the map stand-ins.
+
+    `settings` is the real `Settings` in the persistence test; the rail only
+    touches `s` through `hasattr` guards, so the stub is enough everywhere else.
+    """
+
+    def __init__(self, tracker=None, settings=None):
+        self.overlay_mgr = _Ov(tracker or _Tracker())
+        self.s = settings if settings is not None else _Settings()
+        self.model = None
+        self._codex_map_widget = _FakeMapWidget()
+        self._map_info_lbl = _Label()
+        self._last_codex_item = None
+        self._zone_pins_active = False
+
+
+def test_npc_rows_are_every_placed_npc_not_just_the_shops():
+    """The list is EVERY placed NPC: one row per poi_locs placement of the
+    npc / vendor / petshop families. The plain `npc` rows are the point — the
+    compiler used to drop them, so nothing rendered the trainers and quest
+    NPCs at all."""
+    rows = npc_rows()
+    index = geo_pois.load_npc_pois()
+    assert rows and len(rows) == len(index)
+    assert {r["id"] for r in rows} == {p.id for p in index}
+    roles = {r["role"] for r in rows}
+    assert roles <= {"npc", "vendor", "petshop", "mountshop"}
+    assert roles >= {"npc", "vendor", "petshop"}
+    assert [r for r in rows if r["role"] == "npc"], \
+        "the plain world NPCs must be listed, not only the shop families"
+    # placements, not characters: one character id per zone, so a character
+    # standing in many zones is many rows, and none owns a codex card
+    assert len({r["name"] for r in rows}) < len(rows)
+    assert any(codex.find_unit_region(r["id"]) is None for r in rows)
+    for r in rows:
+        assert r["zone_tag"] in ("Z1", "Z2", "Z3", "Other")
+
+
+def test_npc_rows_are_zone_ordered_z1_then_z2_then_z3():
+    """Rows arrive zone-blocked in the world's own order so the zone headers
+    read Z1 … Z2 … Z3 … (anything untagged last)."""
+    order = {"Z1": 0, "Z2": 1, "Z3": 2, "Other": 3}
+    rows = npc_rows()
+    seq = [order[r["zone_tag"]] for r in rows]
+    assert seq == sorted(seq)
+    assert {"Z1", "Z2", "Z3"} <= {r["zone_tag"] for r in rows}
+
+
+def test_npc_list_can_reach_every_placement_and_lists_them_zone_ordered():
+    """The directory lists every placement, in zone -> place -> name order.
+
+    The family rail is ONE at a time, so "every placement is still reachable"
+    means walking all five family buttons with every zone on and the dev rows
+    shown - the union of what they list is the whole index. These rows have no
+    other surface anywhere in the app, so "a placement is simply gone" must never
+    become true without a red test.
+    """
+    order = {"Z1": 0, "Z2": 1, "Z3": 2, "Other": 3}
+    rows = npc_rows()
+    view = NpcListView(_NpcPage())
+    assert view.show_debug is False
+    # the shipped default is Haydn Seek: the plain NPC family is not on
+    assert view.family == "haydn"
+
+    seen = set()
+    for family in ("vendor", "petshop", "mountshop", "npc", "haydn"):
+        view.show_family(family)
+        assert view.show_debug is False
+        here = view.shown_rows()
+        assert here, family
+        if family == "npc":
+            assert not any(r["name"] == "Haydn Seek" for r in here)
+        seq = [order[r["zone_tag"]] for r in here]
+        assert seq == sorted(seq), family
+        seen |= {r["id"] for r in here}
+    # ...plus the debug listing, which owns the dev-only rows outright
+    view.toggle_debug()
+    here = view.shown_rows()
+    assert len(here) == 14, len(here)
+    assert all("(debug)" in r["name"] for r in here)
+    seen |= {r["id"] for r in here}
+    assert seen == {r["id"] for r in rows}
+    assert {"Z1", "Z2", "Z3"} <= {r["zone_tag"] for r in rows}
+def test_the_default_npc_view_lists_haydn_and_hides_the_dev_rows():
+    """The shipped default is Haydn Seek — all ten placements, every zone on,
+    the dev-only rows hidden, and nothing else.
+
+    Haydn leads because his ten spots are the reason this list gets opened at
+    all; the shop families are one click away rather than on by themselves.
+    """
+    view = NpcListView(_NpcPage())
+    assert view.family == "haydn"
+    shown = {(r["name"], r["zone"]) for r in view.shown_rows()}
+    assert shown
+    assert len(shown) == 10, len(shown)
+    for r in npc_rows():
+        expect = r["name"] == "Haydn Seek" and "(debug)" not in r["name"]
+        assert ((r["name"], r["zone"]) in shown) is expect, r["name"]
+
+
+def test_opening_the_npc_list_plots_haydns_pins_on_the_map():
+    """The opening family arrives plotted, like its button had been clicked:
+    Haydn's ten pins land on the codex map with the build, not after it."""
+    page = _NpcPage()
+    view = NpcListView(page)
+    assert view.family == "haydn"
+    assert len(page._codex_map_widget.pins) == 10, \
+        page._codex_map_widget.pins
+    assert page._codex_map_widget.selected == "Haydn Seek", \
+        page._codex_map_widget.selected
+def test_the_table_sits_at_the_top_of_its_pane_not_floating_in_the_middle():
+    """The rows belong at the top of the pane, right under the column headers.
+
+    The RAIL is what decides how tall the pane is (five families + three zones +
+    the view toggle is ~360px), so the table's column is usually far taller than
+    the rows in it - the mount shops are two. Without a trailing stretch the
+    layout has nowhere to put that surplus and Qt centers the table in the
+    column, so a short family opened with a blank band above its first row, sized
+    by the rail. Found on the real page: with the mount shops selected the table
+    sat 135px down inside a 357px pane, and the two-row table read as an empty
+    list with one row's worth of rows floating under the middle.
+    """
+    view = NpcListView(_NpcPage())
+    view.rail_option("role", "mountshop").click()
+    view.show()
+    try:
+        view.resize(700, 360)          # the pane the rail's own height gives it
+        QtCore.QCoreApplication.processEvents()
+        assert view.row_count == 2
+        assert view._table.y() <= 1, \
+            f"the table floats {view._table.y()}px below the top of its pane"
+        assert view._table.height() < view.height(), \
+            "the fixture is only meaningful while the pane is taller than the rows"
+    finally:
+        view.hide()
+        view.deleteLater()
+        QtCore.QCoreApplication.processEvents()
+
+
+def test_npc_rows_draw_their_own_marker_and_accent_not_one_shared_npc():
+    """Every role reads its own art off the shipped atlas, in its own colour.
+
+    The roles used to share one `npc` person and one gold, then one `shop` sprite
+    for all three shop counters, then whatever the minimap sheet had spare (`bell`
+    for the pet counter, the Overlays page's `crosshair` for the mount tamer).
+    They read the NPCs' OWN sprites now, and both sheets come with the app, so a
+    frozen build draws every one of them with no loose art on disk:
+
+    - the MINIMAP sheet for the NPC-ish roles: the plain person (`npc`) and
+      Haydn's `npc_bubble`, the two sprites the game's own map draws for them;
+    - the UNITS sheet for the three shop counters, where the NPCs' art lives:
+      `wanderingmerchant` (the Guild Merchant), `demonhunterzoey` (Zoey, who
+      keeps the pet stands in all three zones) and `stablemaster` (the mount
+      stands' keeper).
+
+    The MOUNT TAMER still has no sprite of his OWN: `mounttamer`, `tamer` and
+    `perina` appear nowhere in the atlas - not among its 1632 unit entries, not
+    anywhere else. What the mount shop reads instead is the game's ONLY
+    mount-keeper unit, which the unit table files as a Human named "Guild
+    Merchant": `StableMaster`. The day a tamer sprite lands the probe list below
+    goes red and says to use it - as it did for the collection sheet's creature
+    that used to stand in here.
+
+    The three shop COLOURS are not this list's own either: they are
+    `theme.KIND_COLOR`'s, the same table the minimap's kiosk rings read
+    (`minimap_render.poi_pixmap`), so the directory and the map agree by
+    construction instead of by two lists kept in step by hand.
+    """
+    from farever_companion.data import atlas
+    from farever_companion.data import cdb
+    from farever_companion.data import icons
+    from farever_companion.ui import theme
+    from farever_companion.ui.pages.codex.npc_list import (
+        role_art, role_glyph, role_sheet, row_accent)
+
+    plain_npc = {"role": "npc", "name": "Rita Von Cheese"}
+    haydn = {"role": "npc", "name": "Haydn Seek"}
+    vendor = {"role": "vendor", "name": "Guild Merchant"}
+    petshop = {"role": "petshop", "name": "Zoey, Demon Huntress"}
+    mountshop = {"role": "mountshop", "name": "Perina Wann"}
+    sample = [plain_npc, vendor, petshop, mountshop, haydn]
+
+    # four roles, four colours - plus Haydn's own
+    accents = [row_accent(r) for r in sample]
+    assert len(set(accents)) == len(accents) == len(sample), accents
+
+    assert role_art(plain_npc) == ("minimap", "npc")
+    assert role_art(vendor) == ("units", "wanderingmerchant")
+    assert role_art(petshop) == ("units", "demonhunterzoey")
+    assert role_art(haydn) == ("minimap", "npc_bubble")
+    # the mount shop's sprite is the game's own mount keeper, not a gap and not
+    # a creature: `mounttamer`/`tamer`/`perina` is still nowhere in the atlas, so
+    # the day one lands this probe list goes RED and says to use it.
+    for probe in ("mounttamer", "mounttamer_npc_1", "tamer", "perina",
+                  "perinawann"):
+        assert atlas.find_entry(None, probe) is None, \
+            f"the atlas has {probe} now: use it for the mount shop"
+    assert role_art(mountshop) == ("units", "stablemaster")
+    # ... and the unit table really does call that unit the mount keeper
+    stable = [m for m in cdb.lines("units")
+              if m.get("id") == "StableMaster"]
+    assert len(stable) == 1, stable
+    assert stable[0].get("type") == "Human"
+
+    # the art the three counters read is really on the units sheet
+    for name in ("wanderingmerchant", "demonhunterzoey", "stablemaster"):
+        assert atlas.find_entry("units", name) is not None, name
+
+    # the shop family is three different pictures, not three copies of one
+    shops = [vendor, petshop, mountshop]
+    assert len({role_glyph(r) for r in shops}) == 3
+    assert len({row_accent(r) for r in shops}) == 3, \
+        "the shop family must not be one gold"
+
+    # the shop colours are the kind table's, so the map's kiosks and these rows
+    # are the same three colours rather than two palettes in sync by accident
+    shop_colours = {theme.KIND_COLOR[k]
+                    for k in ("vendor", "petshop", "mountshop")}
+    assert len(shop_colours) == 3, theme.KIND_COLOR
+    for role in ("vendor", "petshop", "mountshop"):
+        assert row_accent({"role": role, "name": "x"}) == theme.KIND_COLOR[role]
+    assert row_accent(plain_npc) not in shop_colours
+
+    # every sprite resolves on the sheet its role names, and a marker really
+    # draws: five roles over FIVE places in the atlas, one each
+    cells = {}
+    for r in sample:
+        entry = atlas.find_entry(role_sheet(r), role_glyph(r))
+        assert entry is not None, (role_sheet(r), role_glyph(r))
+        cells[role_glyph(r)] = (entry["file"], entry["x"], entry["y"])
+        pm = icons.marker(role_glyph(r), 26, accent=row_accent(r),
+                          sheet=role_sheet(r))
+        assert not pm.isNull(), (r["role"], role_glyph(r))
+    assert len(set(cells.values())) == 5, cells
+
+
+def test_every_family_button_draws_the_sprite_its_rows_do():
+    """The rail's family buttons carry the same art their rows draw.
+
+    The rail was text-only, so the one thing that tells the roles apart (the
+    sprite) was invisible until you scrolled to the rows. Each family button has
+    its sprite now, at the rail's own size: the Guild Merchant, the pet-shop
+    keeper and the mount keeper off the units sheet, the plain person and Haydn's
+    bubble off the minimap sheet - five buttons, five different sprites. The zone
+    buttons are filters rather than places and stay text-only, and the PTS debug
+    button takes the plain NPC sprite its rows draw.
+
+    A family button is the FAMILY's sprite, not its rows': the rail answers "what
+    kind of place is this", so the plain-NPC button draws the plain person even
+    though ten of its rows draw Hilda Lambert's own face - that the buttons stay
+    five distinct pictures is the point.
+    """
+    from farever_companion.data import icons
+    from farever_companion.ui.pages.codex.npc_list import role_glyph, role_sheet
+
+    view = NpcListView(_NpcPage())
+    keys = {}
+    for family in ("vendor", "petshop", "mountshop", "npc", "haydn"):
+        btn = view.rail_option("role", family)
+        assert not btn.icon().isNull(), family
+        pm = btn.icon().pixmap(16, 16)
+        assert (pm.width(), pm.height()) == (16, 16), family
+        keys[family] = pm.cacheKey()
+    assert len(set(keys.values())) == 5, \
+        "two family buttons draw the same atlas sprite"
+
+    assert view._family_art("vendor") == ("units", "wanderingmerchant")
+    assert view._family_art("petshop") == ("units", "demonhunterzoey")
+    assert view._family_art("mountshop") == ("units", "stablemaster")
+    assert view._family_art("npc") == ("minimap", "npc")
+    assert view._family_art("haydn") == ("minimap", "npc_bubble")
+    # ... and a button draws exactly the sprite its rows draw, minus the ring. The
+    # row is a REAL placement, id and all, so this covers the row-level resolution
+    # as well as the role default: both have to land on the same atlas cell.
+    row = {"id": "DemonHuntZoey_NPC_Azuram", "role": "petshop",
+           "name": "Zoey, Demon Huntress"}
+    assert view.rail_option("role", "petshop").icon().pixmap(16, 16).toImage() \
+        == icons.marker(role_glyph(row), 16, sheet=role_sheet(row)).toImage()
+    # the mount shop's own placement follows the same rule
+    mount_row = {"id": "MountTamer_NPC_1", "role": "mountshop",
+                 "name": "Perina Wann"}
+    assert view.rail_option("role", "mountshop").icon().pixmap(16, 16).toImage() \
+        == icons.marker(role_glyph(mount_row), 16,
+                        sheet=role_sheet(mount_row)).toImage()
+
+    assert view.rail_option("view", "debug").icon().pixmap(16, 16).toImage() \
+        == view.rail_option("role", "npc").icon().pixmap(16, 16).toImage(), \
+        "the PTS debug button draws the plain NPC sprite its rows draw"
+    for tag in ("Z1", "Z2"):
+        assert view.rail_option("zone", tag).icon().isNull(), \
+            "the zone buttons are filters, not places: they stay text-only"
+def test_every_placement_draws_the_character_the_unit_table_gives_it():
+    """The whole shipped directory: 85 placements, 38 characters, and which of
+    them the atlas can draw.
+
+    A row is a PLACEMENT, so it draws the character standing there rather than
+    its family's placeholder: the head of the `poi_locs` id when that names a
+    unit (`WanderingMerchant_Npc_Azuram` -> the `WanderingMerchant` unit), and
+    otherwise the row's own NAME looked up in the game's unit table
+    (`Hilda Lambert` -> the `HildaLambert` unit, her ids being the generic
+    `Codex_NPC_Hilda_*`). Both routes are keyed on the unit TABLE, so a generic
+    head cannot resolve against whatever the atlas happens to call it.
+
+    Twelve of the 38 characters have art; the other 26 - the plain world NPCs,
+    Miss Arte, the prisoners the sheet files as `Critters`, the debug merchants -
+    have NONE anywhere in the atlas, so they draw the family's plain person. Both
+    lists are written out: a sprite landing for a name in the gap is a RED test,
+    the same way `StableMaster` already covers the mount shop.
+    """
+    from farever_companion.ui.pages.codex.npc_list import (
+        npc_rows, placement_unit, role_art)
+
+    # the characters the game's own units give a face, and the sprite each draws
+    drawn = {
+        "Guild Merchant": ("units", "WanderingMerchant"),
+        "Mira, Demon Huntress": ("units", "DemonHunterMira"),
+        "Zoey, Demon Huntress": ("units", "DemonHunterZoey"),
+        "Hilda Lambert": ("units", "HildaLambert"),
+        "Job Welldon": ("units", "ProfessionTrainer"),
+        "Tyra Firma": ("units", "TODO_BaseNPC_01"),
+        "Kobold Prisoner": ("units", "Kobold_Prisoner"),
+        "Apix Prisoner": ("units", "Bee_Prisoner"),
+        "Royal Guard Prisoner": ("units", "Bee_Prisoner1"),
+        "Perina Wann": ("units", "stablemaster"),
+        "Haydn Seek": ("minimap", "npc_bubble"),
+        # the PTS debug merchant is the vendor family's plain counter
+        "Major Update Preview Merchant (debug)": ("units", "wanderingmerchant"),
+    }
+    # ... and the 26 the atlas never drew: one plain person each
+    gap = {
+        "Adrian", "Al Scarpone", "Beelly the Bee", "Beerutus", "Chapel Groan",
+        "Chef Baker", "Christian Loubouquetin", "Gemini Trinket", "H. Catchum",
+        "India Nachos", "Kobold Docker Prisoner", "Lamb Ada", "Lee Van Glyph",
+        "Lora Craft", "Major Update Preview Helper (debug)", "Miss Arte",
+        "Mortis Goat", "Nepside Prisoner", "Nepside Whale Prisoner", "Ratou",
+        "Rita Von Cheese", "Ruby Garland", "Scout Pilgrim", "Shirley Templar",
+        "Sister Abigail", "Tay Mirh",
+    }
+
+    rows = npc_rows()
+    assert rows, "the shipped directory lists nothing"
+    by_name = {}
+    for r in rows:
+        by_name.setdefault(r["name"], set()).add(role_art(r))
+    assert set(by_name) == set(drawn) | gap, sorted(set(by_name) - set(drawn) - gap)
+    for name, art in drawn.items():
+        assert by_name[name] == {art}, (name, by_name[name])
+    # every other character draws the plain person (the mount shop is NOT in the
+    # gap: it reads the unit table's StableMaster)
+    for name in gap:
+        assert by_name[name] == {("minimap", "npc")}, (name, by_name[name])
+    assert placement_unit({"id": "MountTamer_NPC_1"}) is None, \
+        "the mount tamer is the one family with no unit of his own"
+
+    # the spelling the sheet and the unit table disagree on, pinned: without the
+    # alias both Demon Huntresses fall through to the vendor's Guild Merchant
+    assert placement_unit({"id": "DemonHuntMira_NPC_Azuram"}) == \
+        "DemonHunterMira"
+    assert placement_unit({"id": "DemonHuntZoey_NPC_Azuram"}) == \
+        "DemonHunterZoey"
+    # the id route also has to read every casing the sheet writes (Npc/NPC)
+    assert placement_unit({"id": "WanderingMerchant_Npc_Azuram"}) == \
+        "WanderingMerchant"
+    assert placement_unit({"id": "WanderingMerchant_NPC_Primevalley_1"}) == \
+        "WanderingMerchant"
+    # a name the unit table uses for TWO characters resolves no one: the wandering
+    # merchant and the stable master are both "Guild Merchant", so only the id
+    # route may pick between them
+    assert placement_unit({"id": "", "name": "Guild Merchant"}) is None
+
+    # and every sprite a row draws is really an atlas entry, on its named sheet
+    from farever_companion.data import atlas
+    for r in rows:
+        sheet, sprite = role_art(r)
+        assert atlas.find_entry(sheet, sprite) is not None, (r["id"], sheet, sprite)
+
+
+def test_the_table_marks_every_row_the_atlas_cannot_draw():
+    """Each placement the atlas never drew wears '◌ no art', and only those do.
+
+    The mark comes off the SAME route the row's sprite takes (`role_art`), so the
+    cell and the icon cannot disagree: a row wears the mark exactly when what it
+    draws is the atlas's plain-person placeholder. That is what puts the gap -
+    26 of the 38 characters - in front of the user instead of only in the
+    directory test above.
+    """
+    from farever_companion.ui.pages.codex.npc_list import (
+        atlas_cannot_draw, role_art)
+
+    plain = ("minimap", "npc")
+    rows = npc_rows()
+    gapped = [r for r in rows if atlas_cannot_draw(r)]
+    assert gapped and len(gapped) < len(rows), \
+        "the shipped atlas still has its gap"
+    # the predicate is exactly "the sprite drawn is the plain person", on every
+    # row in the whole index - and the gap is the 26 characters, 34 placements
+    for r in rows:
+        assert atlas_cannot_draw(r) is (role_art(r) == plain), (r["name"], r["id"])
+    assert len({r["name"] for r in gapped}) == 26
+    assert len({r["name"] for r in rows if not atlas_cannot_draw(r)}) == 12
+    assert "Perina Wann" not in {r["name"] for r in gapped}, \
+        "the mount shop draws the unit table's stablemaster, not a gap"
+
+    view = NpcListView(_NpcPage())
+    for r in view.shown_rows():
+        assert view.art_mark(r) == ("◌ no art" if atlas_cannot_draw(r) else ""), \
+            r["name"]
+
+    # ... and the CELL carries it, on a family that has both kinds of row
+    view.show_family("npc")
+    listing = view.shown_rows()
+    assert any(atlas_cannot_draw(r) for r in listing)
+    assert any(not atlas_cannot_draw(r) for r in listing)
+    for i, r in enumerate(listing):
+        shown = view._table.item(i, 5).text()
+        assert ("◌ no art" in shown) is atlas_cannot_draw(r), r["name"]
+
+
+def test_the_rail_lists_the_atlas_gap_across_every_role_and_zone():
+    """The 'No atlas sprite' view is the whole gap in one place.
+
+    The gap is neither a family nor a place, so the listing ignores both rails -
+    otherwise finding "what can the atlas not draw" would mean clicking through
+    every family and zone by hand. Every gap row is a plain NPC by construction:
+    the three shop families all draw a real character sprite as their
+    placeholder, so only the `npc` family can fall back to the plain person. It
+    still honours the dev-rows toggle (a different axis: shipped vs. PTS-only).
+    Off again, the table comes back to the family and zones it was on, because
+    the view never touched them.
+    """
+    from farever_companion.ui.pages.codex.npc_list import atlas_cannot_draw
+
+    view = NpcListView(_NpcPage())
+    assert view.noart_only is False
+    assert view._noart_hint.isHidden()
+
+    # a narrow family/zone view, to prove the gap listing ignores both
+    view.rail_option("role", "mountshop").click()
+    view.rail_option("zone", "Z3").click()
+    rails = {r["id"] for r in view.shown_rows()}
+    assert rails
+
+    gap_all = {r["id"] for r in npc_rows() if atlas_cannot_draw(r)}
+    gap_ship = {r["id"] for r in npc_rows()
+                if atlas_cannot_draw(r) and "(debug)" not in r["name"]}
+    assert gap_all > gap_ship, "the gap includes the PTS-only rows too"
+
+    opt = view.rail_option("view", "noart")
+    assert opt is not None and opt.text().startswith("No atlas sprite")
+    opt.click()
+    assert view.noart_only is True and opt.isChecked()
+    assert not view._noart_hint.isHidden()
+
+    listing = view.shown_rows()
+    assert {r["id"] for r in listing} == gap_ship
+    assert {r["role"] for r in listing} == {"npc"}, \
+        "only the plain-NPC family has a plain-person placeholder"
+    assert len({r["zone_tag"] for r in listing}) >= 2, "more than one zone"
+    assert not ({r["id"] for r in listing} <= rails), \
+        "the listing is not just the narrow view it was opened from"
+
+    # dev rows off still means off, for this listing too
+    view.rail_option("view", "debug").click()
+    assert {r["id"] for r in view.shown_rows()} == gap_all
+    view.rail_option("view", "debug").click()
+
+    opt.click()
+    assert view.noart_only is False and view._noart_hint.isHidden()
+    assert {r["id"] for r in view.shown_rows()} == rails
+
+
+def test_the_atlas_gap_view_is_a_look_not_a_saved_filter(monkeypatch, tmp_path):
+    """It is not persisted and it plots nothing: the next visit opens on the
+    family the settings carry, and the click never touches the map."""
+    monkeypatch.setenv("FAREVER_MODDATA_DIR", str(tmp_path))
+    from farever_companion.config.model import Settings
+
+    settings = Settings()
+    page = _NpcPage(settings=settings)
+    view = NpcListView(page)
+    view.rail_option("role", "mountshop").click()
+    pins = list(page._codex_map_widget.pins)
+    view.rail_option("view", "noart").click()
+    assert view.noart_only is True
+    assert page._codex_map_widget.pins == pins, "a filter must not move the map"
+    assert settings.codex_npc_role == "mountshop", \
+        "the view state is not a stored filter"
+
+    again = NpcListView(_NpcPage(settings=settings))
+    assert again.noart_only is False
+    assert again.family == "mountshop"
+
+
+def test_a_gap_row_that_is_tracked_wears_both_marks():
+    """The cell is where the two facts meet: the atlas gap and the tracking
+    marker share it, and `track_mark` still reports only the tracking token -
+    the contract the tracker reads."""
+    from farever_companion.ui.pages.codex.npc_list import atlas_cannot_draw
+
+    probe = NpcListView(_NpcPage())
+    probe.show_family("npc")
+    row = next(r for r in probe.shown_rows() if atlas_cannot_draw(r))
+    key = NpcMixin._npc_track_key(probe.ui, row)
+
+    view = NpcListView(_NpcPage(_Tracker(tracked=[("pos", key)])))
+    view.show_family("npc")
+    hit = next(r for r in view.shown_rows() if r["id"] == row["id"])
+    assert view.art_mark(hit) == "◌ no art"
+    assert view.track_mark(hit) == "◈ TRACKING"
+    text = view._table.item(view.shown_rows().index(hit), 5).text()
+    assert "◌ no art" in text and "◈ TRACKING" in text, text
+
+
+def test_npc_rows_show_their_role_place_and_zone_and_keep_no_tooltip():
+    """One row per placement: its marker, name, role, place and zone. The place
+    and zone have their own columns now, which is what replaces the zone
+    headers - and no tooltip, the flat-list convention."""
+    from farever_companion.ui.pages.codex.npc_list import row_accent
+    view = NpcListView(_NpcPage())
+    labels = {"npc": "NPC", "vendor": "Vendor",
+              "petshop": "Pet Shop", "mountshop": "Mount Shop"}
+    assert view._table.toolTip() == ""
+    assert view.shown_rows()
+    for i, r in enumerate(view.shown_rows()):
+        assert not view._table.item(i, 0).icon().isNull(), r["name"]
+        assert view._table.item(i, 1).text() == r["name"]
+        assert view._table.item(i, 2).text() == labels[r["role"]]
+        # the accent reaches the table, not just the helper
+        assert view._table.item(i, 2).foreground().color().name() == \
+            row_accent(r), r["name"]
+        assert view._table.item(i, 3).text() == r["place"]
+        assert view._table.item(i, 4).text() == r["zone_tag"]
+
+
+def test_the_mount_tamers_are_mount_shops_not_plain_vendors():
+    """Perina Wann sells the mounts and gliders, and the poi_locs sheet files
+    her two stalls under the plain `vendor` sub_kind - which is why the mount
+    shop listed ZERO placements and stayed invisible on the rail.
+
+    The game's own ids say what they are (`MountTamer_NPC_1/2`), so the index
+    corrects the role - in `load_pois()`, the one place it is built, so EVERY
+    reader agrees: the minimap would otherwise draw the two mount kiosks as
+    ordinary vendors (it has no mount kiosk at all), while the NPC directory
+    below calls them mount shops.
+
+    This pins both halves: the raw sheet still says `vendor` (so the override is
+    still needed - read straight out of the compiled `poi_locs`), and the index
+    every reader sees says `mountshop` (so it still lands). A sheet that starts
+    saying `mountshop` itself makes this red, instead of leaving a duplicate
+    override behind.
+    """
+    from farever_companion.data import cdb
+
+    sheet = {str(m.get("id")): m.get("sub_kind")
+             for m in cdb.lines("poi_locs")
+             if str(m.get("id", "")).startswith("MountTamer_")}
+    assert sheet == {"MountTamer_NPC_1": "vendor",
+                     "MountTamer_NPC_2": "vendor"}, \
+        "the sheet no longer files the mount tamers as plain vendors: drop _MOUNT_VENDOR_IDS and this test"
+
+    ids = set(sheet)
+    assert {p.sub_kind for p in geo_pois.load_pois() if p.id in ids} == \
+        {"mountshop"}, "the minimap/kiosk reader must see the mount shop too"
+    assert {geo_pois.by_id()[i].sub_kind for i in ids} == {"mountshop"}
+    index = {p.id: p for p in geo_pois.load_npc_pois()}
+    assert {index[i].sub_kind for i in ids} == {"mountshop"}
+
+    tamers = [r for r in npc_rows() if r["id"] in ids]
+    assert {r["role"] for r in tamers} == {"mountshop"}
+    assert {r["name"] for r in tamers} == {"Perina Wann"}
+    assert {r["zone_tag"] for r in tamers} == {"Z1", "Z2"}
+
+
+def test_every_rail_option_is_a_button_not_a_drawn_checkbox():
+    """The rail is a column of toggle BUTTONS, and the family buttons are one at
+    a time.
+
+    It used to draw a 13x13 square per option, which read as a checkbox while
+    being neither a `QCheckBox` (no hover, no focus, no keyboard, no checked
+    state Qt styles) nor a button. Every option is a checkable `QPushButton`
+    now, and this drives the real widgets: a family click moves the light to the
+    family it selected, lists it and plots it, while the debug toggle still flips
+    the dev rows.
+
+    Haydn Seek's entry is the last family BUTTON rather than a section of its
+    own: `Pin all Haydn` was a momentary button sitting beside a table it did not
+    filter, and the family click is that action now.
+    """
+    page = _NpcPage()
+    view = NpcListView(page)
+    assert view.findChildren(QtWidgets.QCheckBox) == [], \
+        "the rail's squares were hand-styled; nothing in it is a QCheckBox"
+    assert view.rail_option("view", "fold") is None, \
+        "'Fold repeats' did nothing but the debug rows, and is gone"
+    assert view.rail_option("view", "haydn") is None, \
+        "'Only Haydn' is the Haydn family button now, not a mode of its own"
+
+    # `PTS debug npcs` is named for what it turns ON, like every other button
+    # here: lit means the dev-only placements are in the list. It read `Hide
+    # debug PTS npcs` and was lit while HIDING them.
+    debug = view.rail_option("view", "debug")
+    assert isinstance(debug, QtWidgets.QPushButton)
+    assert debug.text().startswith("PTS debug npcs")
+    assert debug.isCheckable() and not debug.isChecked(), \
+        "the dev-only placements start hidden, so the button starts unlit"
+    listed = {r["id"] for r in view.shown_rows()}
+    assert listed == {r["id"] for r in npc_rows()
+                      if r["name"] == "Haydn Seek"
+                      and "(debug)" not in r["name"]}
+    # the debug toggle belongs to one role: walk there first, and re-read
+    # the listing there (it was Haydn's above)
+    view.rail_option("role", "vendor").click()
+    listed = {r["id"] for r in view.shown_rows()}
+    assert listed == {r["id"] for r in npc_rows()
+                      if r["role"] == "vendor"
+                      and "(debug)" not in r["name"]}
+    debug.click()
+    assert debug.isChecked()
+    assert {r["id"] for r in view.shown_rows()} == {
+        r["id"] for r in npc_rows() if "(debug)" in r["name"]}
+    debug.click()
+    assert not debug.isChecked()
+    assert {r["id"] for r in view.shown_rows()} == listed
+
+    vendor = view.rail_option("role", "vendor")
+    petshop = view.rail_option("role", "petshop")
+    assert isinstance(vendor, QtWidgets.QPushButton)
+    assert vendor.isCheckable() and vendor.isChecked()
+    assert vendor.text().startswith("Vendor")
+    petshop.click()                      # the real button, the real slot
+    assert petshop.isChecked()
+    assert not vendor.isChecked(), "the family buttons are one at a time"
+    assert view.shown_rows()
+    assert all(r["role"] == "petshop" for r in view.shown_rows())
+    assert page._codex_map_widget.pins, \
+        "the click plots the family it selected"
+    vendor.click()
+    assert vendor.isChecked() and not petshop.isChecked()
+    assert any(r["role"] == "vendor" for r in view.shown_rows())
+
+    # Haydn Seek is the last family button, and it lists his placements
+    haydn = view.rail_option("role", "haydn")
+    assert isinstance(haydn, QtWidgets.QPushButton)
+    assert haydn.text().startswith("Haydn Seek")
+    assert not haydn.isChecked()
+    haydn.click()
+    assert haydn.isChecked() and not vendor.isChecked()
+    assert view.shown_rows() and all(
+        r["name"] == "Haydn Seek" for r in view.shown_rows())
+
+    # the plain NPC family lists them and leaves the map alone - and it is every
+    # OTHER world NPC: Haydn Seek has a family button of his own, so he is not
+    # also an NPC row (nor counted in that button's number)
+    npc = view.rail_option("role", "npc")
+    npc.click()
+    assert npc.isChecked()
+    assert view.shown_rows()
+    assert all(r["role"] == "npc" for r in view.shown_rows())
+    assert not any(r["name"] == "Haydn Seek" for r in view.shown_rows())
+    others = len([r for r in npc_rows()
+                  if r["role"] == "npc" and r["name"] != "Haydn Seek"])
+    haydn = len([r for r in npc_rows() if r["name"] == "Haydn Seek"])
+    assert npc.text() == f"NPC  {others}"
+    assert view.rail_option("role", "haydn").text() == f"Haydn Seek  {haydn}"
+    assert page._codex_map_widget.pins == [], \
+        "one click on the NPC family must not bury the map in every NPC"
+def test_the_haydn_family_button_lists_and_pins_every_placement_at_once():
+    """The Haydn family is the rail's last entry and behaves like a role: one
+    click lists his placements and plots every one of them at once.
+
+    Each pin is labeled with the PLACE it stands in - ten pins all reading
+    "Haydn Seek" would be ten identical labels stacked on each other. Tracking
+    ten of them would be ten needles and ten Entity HUD rows, which is not what
+    "where is Haydn" means.
+    """
+    page = _NpcPage()
+    view = NpcListView(page)
+    spots = [r for r in npc_rows() if r["name"] == "Haydn Seek"]
+    assert len(spots) > 1
+    btn = view.rail_option("role", "haydn")
+    assert btn is not None
+    assert btn.text() == f"Haydn Seek  {len(spots)}"
+
+    btn.click()
+    assert btn.isChecked()
+    assert {r["id"] for r in view.shown_rows()} == {r["id"] for r in spots}
+    pins = page._codex_map_widget.pins
+    assert len(pins) == len(spots)
+    assert {(p["x"], p["y"]) for p in pins} == \
+        {(float(r["x"]), float(r["y"])) for r in spots}
+    assert len({p["name"] for p in pins}) == len(pins)
+    assert all(p["show_label"] for p in pins)
+    assert str(len(pins)) in page._map_info_lbl.text
+def test_the_npc_rail_selects_one_family_and_plots_it():
+    """The rail is the point of the directory: the two questions people arrive
+    with - where is a shop, where is Haydn - are one click each, and the click
+    answers them twice over: the table lists that family and the map plots it.
+
+    The plain NPC family is the exception: it lists (the trainers and guards are
+    reachable) but plots nothing, because one click there would put every quest
+    NPC in the game on the map at once.
+    """
+    page = _NpcPage()
+    view = NpcListView(page)
+    rows = npc_rows()
+
+    haydn = view.rail_option("role", "haydn")
+    vendor = view.rail_option("role", "vendor")
+    petshop = view.rail_option("role", "petshop")
+    assert haydn.isChecked() and not vendor.isChecked()
+    # opening plots the default family before any click does
+    assert len(page._codex_map_widget.pins) == 10
+    assert page._codex_map_widget.selected == "Haydn Seek"
+    petshop.click()
+    assert petshop.isChecked()
+    assert not vendor.isChecked(), "exactly one family is selected at a time"
+    assert view.family == "petshop"
+    assert view.shown_rows()
+    assert all(r["role"] == "petshop" for r in view.shown_rows())
+    # the click plots the WHOLE family, not just the rows the zone rail leaves
+    want = [r for r in rows if r["role"] == "petshop"]
+    assert len(page._codex_map_widget.pins) == len(want)
+    assert str(len(want)) in page._map_info_lbl.text
+
+    # clicking the lit family again keeps it selected: there is no "none" state
+    petshop.click()
+    assert petshop.isChecked() and view.family == "petshop"
+
+    # the dev rows are a listing of their own: from any family, the toggle
+    # shows all 14 across every role and zone, and off restores the family
+    assert view.row_count == 3  # the petshops, dev rows out
+    view.toggle_debug()
+    assert view.show_debug is True
+    assert view.row_count == 14, view.row_count
+    assert all("(debug)" in r["name"] for r in view.shown_rows())
+    view.toggle_debug()
+    assert view.show_debug is False
+    assert view.row_count == 3
+    assert view.family == "petshop", "the family survives the debug detour"
+
+    # zones stay multi-select, and the last one that lists rows cannot go off
+    view.rail_option("role", "npc").click()
+    assert not any(r["name"] == "Haydn Seek" for r in view.shown_rows()), \
+        "the NPC family is every world NPC except Haydn Seek"
+    for tag in sorted({r["zone_tag"] for r in rows}):
+        view.toggle_zone(tag)
+    assert view.row_count, "the last zone with rows cannot be switched off"
+    assert len({r["zone_tag"] for r in view.shown_rows()}) == 1, \
+        "exactly the one zone that still lists rows stays on"
+def test_picking_a_role_leaves_the_diagnostic_listings():
+    """A role click answers "where is X" right now: with the debug rows and
+    the atlas gap both driving the table, picking a family turns both views
+    off, so the click lists that family instead of lighting up behind the
+    listings. The zones are untouched, and the views are one click away."""
+    view = NpcListView(_NpcPage())
+    view.rail_option("view", "debug").click()
+    view.rail_option("view", "noart").click()
+    assert view.show_debug is True and view.noart_only is True
+
+    view.rail_option("role", "vendor").click()
+    assert view.family == "vendor"
+    assert view.show_debug is False and view.noart_only is False
+    assert not view.rail_option("view", "debug").isChecked()
+    assert not view.rail_option("view", "noart").isChecked()
+    assert view.rail_option("role", "vendor").isChecked()
+    assert view.shown_rows(), "the picked family lists, not the old views"
+    assert all(r["role"] == "vendor" for r in view.shown_rows())
+    assert not any("(debug)" in r["name"] for r in view.shown_rows())
+def test_the_npc_rail_remembers_its_filters_through_the_settings(
+        monkeypatch, tmp_path):
+    """The rail persists its filters the way the rest of the Codex does.
+
+    This view is rebuilt every time the NPC chip is activated, so the state has
+    to live in the settings. A second view over the same settings object, and a
+    settings file reloaded from disk, must both come back with the rail the last
+    visit left behind: the mount shops selected, a zone off, the dev rows shown.
+
+    The family persists as a key of its own (`codex_npc_role`) and the zones as
+    the OFF set (`codex_npc_zones_off`), which is what makes a zone tag a game
+    patch adds arrive ON - see the next test.
+    """
+    monkeypatch.setenv("FAREVER_MODDATA_DIR", str(tmp_path))
+    from farever_companion.config.model import Settings
+
+    settings = Settings()
+    first = NpcListView(_NpcPage(settings=settings))
+    first.rail_option("role", "mountshop").click()
+    first.rail_option("zone", "Z3").click()
+    first.rail_option("view", "debug").click()
+    left = {r["id"] for r in first.shown_rows()}
+    assert left, "the filtered view still lists rows"
+
+    # the settings really carry it: the family key plus the zones' OFF set
+    assert settings.codex_npc_role == "mountshop"
+    assert settings.codex_npc_zones_off == ["Z3"]
+    assert settings.codex_npc_show_debug is True
+
+    # ... and a second view over them opens where the first one left off
+    again = NpcListView(_NpcPage(settings=settings))
+    assert again.family == "mountshop"
+    assert {r["id"] for r in again.shown_rows()} == left
+    assert again.show_debug is True
+    assert again.rail_option("role", "mountshop").isChecked()
+    assert not again.rail_option("role", "vendor").isChecked()
+    assert not again.rail_option("zone", "Z3").isChecked()
+
+    # ... and so does a fresh load of the file it wrote
+    reloaded = Settings.load()
+    assert reloaded.codex_npc_role == "mountshop"
+    assert reloaded.codex_npc_zones_off == ["Z3"]
+    assert reloaded.codex_npc_show_debug is True
+
+
+def test_the_retired_npc_view_flags_are_stripped_from_the_settings(
+        monkeypatch, tmp_path):
+    """The rail names an option for what it turns ON, and two old flags are gone.
+
+    `Only Haydn` is the Haydn family button now, and `Hide debug PTS npcs` is
+    `PTS debug npcs` - the opposite polarity. A settings file written before
+    either must not keep them: `haydn_only` would read as a control that no
+    longer exists, and a leftover `hide_debug` would sit in the list next to the
+    new flag while meaning the reverse of it.
+    """
+    monkeypatch.setenv("FAREVER_MODDATA_DIR", str(tmp_path))
+    from farever_companion.config.model import Settings
+
+    Settings(codex_npc_options=["hide_debug", "haydn_only"]).save()
+    reloaded = Settings.load()
+    assert reloaded.codex_npc_options == []
+    assert reloaded.codex_npc_show_debug is False
+    # the new flag round-trips on its own
+    Settings(codex_npc_options=["show_debug"]).save()
+    assert Settings.load().codex_npc_show_debug is True
+def test_a_saved_zone_the_game_dropped_never_hides_a_zone_it_still_has(
+        monkeypatch, tmp_path):
+    """The OFF-set shape is a correctness choice, not a style one.
+
+    A zone tag comes out of the GAME DATA, and this list is the only surface
+    those rows have anywhere. An ON list would open the tab with whatever a
+    patch adds already filtered out, so the file records what was switched OFF
+    instead: an empty list means everything is on, a name the game no longer has
+    touches nothing, and a hand-edited file that switches every zone off cannot
+    open onto a blank table (the rail refuses to create that state, so restoring
+    into one is refused too). A saved FAMILY key the game no longer has falls
+    back to one that lists something, for the same reason.
+    """
+    monkeypatch.setenv("FAREVER_MODDATA_DIR", str(tmp_path))
+    from farever_companion.config.model import Settings
+
+    rows = npc_rows()
+    debug = "(debug)"
+
+    # nothing switched off - a first run lists the default family, dev rows out
+    view = NpcListView(_NpcPage(settings=Settings()))
+    assert view.family == "haydn"
+    assert view.row_count == len([r for r in rows
+                                  if r["name"] == "Haydn Seek"
+                                  and debug not in r["name"]])
+
+    # a stale name in the file (a zone the game dropped) hides nothing extra
+    stale = Settings()
+    stale.codex_npc_role = "vendor"
+    stale.codex_npc_zones_off = ["Z9_Gone", "Z1"]
+    view = NpcListView(_NpcPage(settings=stale))
+    assert {r["id"] for r in view.shown_rows()} == {
+        r["id"] for r in rows if r["role"] == "vendor"
+        and r["zone_tag"] in ("Z2", "Z3") and debug not in r["name"]}
+
+    # a family key the game no longer has falls back to one that lists rows
+    gone = Settings()
+    gone.codex_npc_role = "Z9_gone"
+    view = NpcListView(_NpcPage(settings=gone))
+    assert view.family == "haydn" and view.row_count
+
+    # every zone switched off (hand-edited) is not a state this list opens in
+    broken = Settings()
+    broken.codex_npc_zones_off = sorted({r["zone_tag"] for r in rows})
+    view = NpcListView(_NpcPage(settings=broken))
+    assert view.row_count, "an all-off file must not open onto an empty list"
+def test_clicking_a_row_tracks_and_plots_a_labeled_pin():
+    """Clicking a row tracks that placement (the generic `pos` waypoint the
+    Entity HUD uses) and plots the labeled pin on the codex map."""
+    tracker = _ToggleTracker()
+    page = _NpcPage(tracker)
+    view = NpcListView(page)
+    row = view.shown_rows()[0]
+    view._on_cell_clicked(0, 0)
+    key = NpcMixin._npc_track_key(page, row)
+    assert tracker.is_tracked("pos", key)
+    assert len(page._codex_map_widget.pins) == 1
+    assert page._codex_map_widget.pins[0]["name"] == row["name"]
+    assert row["name"] in page._map_info_lbl.text
+
+
+def test_clicking_a_tracked_row_again_clears_the_pin():
+    """Second click untracks and clears the pin - the row leaves nothing."""
+    tracker = _ToggleTracker()
+    page = _NpcPage(tracker)
+    view = NpcListView(page)
+    row = view.shown_rows()[0]
+    view._on_cell_clicked(0, 0)
+    assert page._codex_map_widget.pins
+    view._on_cell_clicked(0, 0)
+    assert not tracker.is_tracked("pos", NpcMixin._npc_track_key(page, row))
+    assert page._codex_map_widget.pins == []
+
+
+def test_only_the_tracked_row_shows_the_tracking_marker():
+    """The '◈ TRACKING' cell appears on the tracked placement alone.
+
+    Read off the rows the rail actually lists (the shipped default family), so
+    the marker is checked against the table a user is looking at rather than
+    against the raw index.
+    """
+    first = NpcListView(_NpcPage())
+    listed = first.shown_rows()
+    assert len(listed) > 1, "the default family still lists several placements"
+    row = listed[0]
+    key = NpcMixin._npc_track_key(first.ui, row)
+    page = _NpcPage(_Tracker(tracked=[("pos", key)]))
+    view = NpcListView(page)
+    shown = view.shown_rows()
+    hit = next(r for r in shown if r["id"] == row["id"])
+    miss = next(r for r in shown if r["id"] != row["id"])
+    assert view.track_mark(hit) == "◈ TRACKING"
+    assert view.track_mark(miss) == ""
+
+
+class _OthersTab:
+    """Stand-in for the Codex tab combo (the view-mode code reads/sets it)."""
+
+    def __init__(self, text="Other"):
+        self._text = text
+
+    def currentText(self):
+        return self._text
+
+    def setCurrentText(self, text):
+        self._text = text
+
+
+class _OthersChipPage(CodexMapUiMixin, CodexGridMixin):
+    """Minimal page: the Others sub-bar group plus the view-mode pipeline +
+    the card-jump entry points (whose deferred click is a no-op here)."""
+
+    def __init__(self, tab="Other"):
+        self._npc_list_mode = False
+        self._dungeon_list_mode = False
+        self._soulstones_mode = False
+        self._chest_orb_kind = None
+        self._collection_sub = "pets"
+        self.refreshes = 0
+        self._codex_tabs = _OthersTab(tab)
+        self._others_btn_group = QtWidgets.QButtonGroup()
+        self._others_sub_btns = {}
+        for label in ("All", "Shop", "Unreleased", "Misc", "NPC"):
+            btn = QtWidgets.QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(label == "All")
+            self._others_btn_group.addButton(btn)
+            self._others_sub_btns[label] = btn
+
+    def _refresh_codex_grid(self, reset_scroll=False):
+        self.refreshes += 1
+
+
+def test_npc_chip_swaps_the_other_grid_to_the_npc_list():
+    """'NPC' is the one Other chip that swaps the grid to a LIST; a card chip
+    swaps the card grid back, and leaving the view re-checks All."""
+    page = _OthersChipPage()
+    assert not page._codex_npc_view_active()
+
+    page._others_sub_btns["NPC"].setChecked(True)
+    page._on_others_sub_toggled(True)
+    assert page._npc_list_mode and page._codex_npc_view_active()
+    assert page.refreshes == 1
+
+    page._others_sub_btns["Shop"].setChecked(True)
+    page._on_others_sub_toggled(True)
+    assert not page._npc_list_mode
+    assert page.refreshes == 2
+
+    page._others_sub_btns["NPC"].setChecked(True)
+    page._on_others_sub_toggled(True)
+    assert page._npc_list_mode
+    page._leave_npc_view()
+    assert not page._npc_list_mode
+    assert page._others_btn_group.checkedButton() is page._others_sub_btns["All"]
+
+
+def test_npc_chip_owns_no_z0_card():
+    """The NPC sub-view resolves no card, so the Z0 card filter rejects
+    everything for it (while the card chips keep their own answer)."""
+    page = _OthersChipPage()
+    assert page._codex_others_sub_ok({"id": "TODO_StableMaster"}, "npc") is False
+    assert page._codex_others_sub_ok({"id": "TODO_StableMaster"}, "all") is True
+
+
+def test_status_chips_go_plain_on_the_npc_view():
+    """The NPC list renders no cards, so the shared status chips carry no
+    counts while it is up — they would be a lie."""
+    page = _fake_status_widgets(_FakeGridPage())
+    page._npc_list_mode = True
+    page._update_codex_status_chips("Z0", "Other")
+    assert page._status_widgets["All"].text() == "All"
+    assert page._status_widgets["Visible"].text() == "Visible"
+    assert page._status_widgets["Hidden"].text() == "Hidden"
+
+
+def test_opening_a_card_leaves_a_stale_npc_view_first():
+    """Jump-to-card drops the NPC list before it switches tabs, so the jump
+    can never land behind a grid swapped to the NPC list."""
+    page = _OthersChipPage()
+    page._others_sub_btns["NPC"].setChecked(True)
+    page._on_others_sub_toggled(True)
+    assert page._npc_list_mode
+    CodexMapUiMixin._codex_open_card(page, "Z1", "TODO_StableMaster", "Stable")
+    assert not page._npc_list_mode
+
+
+# ======================================================================
+# test_codex_map_markers — the map canvas's pin sprites
+# ======================================================================
+
+def test_the_vendor_pin_only_tries_sprite_names_the_atlas_really_has():
+    """The codex map's vendor pin used to try `shop` -> `currency` -> `vendor`,
+    and the atlas has never had the last two: the chain had no fallback at all.
+
+    It could not have recovered either, which is the part that made it silent -
+    each attempt after the first was guarded by `pixmap.isNull()`, and
+    `icons.marker` never returns None or a null pixmap (a missing asset degrades
+    to a bare accent dot by design), so a renamed atlas sheet would have turned
+    every vendor pin into a gold dot with nothing anywhere saying so.
+    """
+    from farever_companion.data import atlas, icons
+    from farever_companion.ui import theme
+    from farever_companion.ui.pages.codex import map as codex_map
+
+    for name in codex_map._VENDOR_SPRITES:
+        assert atlas.find_entry("minimap", name) is not None, name
+        assert icons.atlas_sprite_resolvable("minimap", name), name
+
+    # the names the old chain tried are still not sprites
+    for phantom in ("currency", "vendor"):
+        assert not icons.atlas_sprite_resolvable("minimap", phantom), phantom
+
+    # ... and that is exactly what the degraded dot looks like, so the pin must
+    # not be it
+    dot = icons.marker("currency", 22, accent=theme.GOLD).toImage()
+    vendor = codex_map._first_resolvable_marker(codex_map._VENDOR_SPRITES, 22,
+                                                theme.GOLD)
+    assert vendor is not None and not vendor.isNull()
+    assert bytes(vendor.toImage().constBits()) != bytes(dot.constBits()), \
+        "the vendor pin must be the shop sprite, not the degraded accent dot"
+
+
+def test_the_pin_marker_walk_skips_a_name_the_atlas_does_not_have():
+    """The walk is the fix, so it is driven with the old chain's names: it must
+    skip the phantom ones, land on the real sprite, and say None - not hand
+    back a dot it believes is a sprite - when nothing resolves."""
+    from farever_companion.data import icons
+    from farever_companion.ui import theme
+    from farever_companion.ui.pages.codex import map as codex_map
+
+    pm = codex_map._first_resolvable_marker(("currency", "vendor", "npc"), 22,
+                                            theme.GOLD)
+    assert pm is not None and not pm.isNull()
+    npc = icons.marker("npc", 22, accent=theme.GOLD).toImage()
+    assert bytes(pm.toImage().constBits()) == bytes(npc.constBits())
+
+    assert codex_map._first_resolvable_marker(("currency", "nope"), 22,
+                                              theme.GOLD) is None

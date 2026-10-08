@@ -267,26 +267,106 @@ def rarity_rank(rarity: str) -> int:
 
 
 # the Rarity buttons (the pinned row above the list): exactly ONE is lit,
-# and the lit tier is a plain filter — Rare shows only the rare gear, Epic
-# only the epic gear. No button is a floor, so no tier drags the tiers
-# above it in (see ItemFiltersMixin._items_toggle_rarity).
+# and on every gear slot EXCEPT Weapons the lit tier is a plain filter —
+# Rare shows only the rare gear, Epic only the epic gear. No button is a
+# floor, so no tier drags the tiers above it in (see
+# ItemFiltersMixin._items_toggle_rarity).
 # Every tier the gear data holds gets a button where the tab has it
 # (ascending): Common is the starter clothes plus one practice sword, so it
 # only appears on Weapons/Armor — Jewelry and the dungeon pools have none.
-# Rare is the tier at rest — the default look. No Legendary button: no gear
-# rolls that tier, so it could never filter anything.
-RARITY_BUTTONS = ("Common", "Uncommon", "Rare", "Epic")
+# Rare is the tier at rest — the default look. Legendary gets a button for
+# the Weapons projection only: no gear in the catalog rolls it, so anywhere
+# else it could never filter anything.
+RARITY_BUTTONS = ("Common", "Uncommon", "Rare", "Epic", "Legendary")
 RARITY_DEFAULT = frozenset({"Rare"})
+
+@lru_cache(maxsize=1)
+def weapon_tier_rarities() -> tuple[str, ...]:
+    """The tiers the WEAPONS surfaces may offer, DERIVED from the game's rows.
+
+    A weapon is the one gear family whose tier is decided when it is GRANTED,
+    not by which row you look at: armor has a separate Epic row per piece,
+    while a weapon's row carries a single rarity and a BOX decides the rung it
+    comes out at (`data/items.obtainable_tiers` — the Hero Weapon Cache rolls
+    Epic..Legendary). So this is the union of what every catalog weapon can
+    actually be handed out at, in ladder order.
+
+    This replaced a flat ("Rare", "Epic", "Legendary") that every tab offered
+    to every weapon: the rungs now come from `idata.obtainable_tiers`, so a
+    vendor-only piece stays Rare-only while every boss-dropped weapon reads
+    up to Legendary (the sheet's `generationChance` roll, scaled by each
+    dungeon's difficulties) — an Epic reading of the wrong weapon is a claim
+    no row supports.
+    """
+    seen: set[str] = set()
+    for it in idata.items():
+        if idata.category(it.get("type")) == "Weapons":
+            seen.update(idata.obtainable_tiers(it.get("id") or ""))
+    return tuple(sorted(seen, key=rarity_rank))
+
+
+def weapon_tiers(item_id: str) -> tuple[str, ...]:
+    """The tiers ONE weapon may be read at: its own obtainable set.
+
+    Anything that is not a weapon answers with its display rarity, so a caller
+    can ask for the readable tiers of any id without a category check first.
+    """
+    it = idata.item(item_id) or {}
+    if idata.category(it.get("type")) == "Weapons":
+        return idata.obtainable_tiers(item_id)
+    own = idata.item_display_rarity(item_id)
+    return (own,) if own else ()
+
+
+def projection_rungs(item_id: str, read_tier: str | None) -> tuple[str, ...]:
+    """The rungs to MARK on a tile that is being READ above the tier the game
+    hands the piece out at: its own drop tier up to `read_tier`, or () when the
+    reading is not above it.
+
+    Boss gear is why this exists. A boss weapon drops authored Rare but rolls
+    Rare/Epic/Legendary from its dungeon, so reading its chip at max IS the
+    drop — the bands state the rungs the game can hand it out at, left to
+    right, framed in the rung it is read at. A chip at a single rung (a
+    vendor-only piece) carries that one band and looks exactly like the data.
+    The Dungeons tab always reads at each weapon's max rung, so its boss
+    chips wear the full ladder; the WEAPONS tab's projection reading marks
+    the same way wherever it reads above the drop.
+    """
+    ladder = weapon_tier_rarities()
+    own = weapon_tiers(item_id) if item_id else ()
+    if not read_tier or not own:
+        return ()
+    if read_tier not in ladder or own[0] not in ladder:
+        return ()
+    low, high = ladder.index(own[0]), ladder.index(read_tier)
+    return tuple(ladder[low:high + 1]) if high > low else ()
+
+
+def weapon_tier_projection(category: str) -> bool:
+    """True when a Quick tab's Rarity buttons also READ the rows at the lit
+    tier rather than only filtering them out — formerly the WEAPONS tab.
+
+    The Weapons tab no longer carries a Rarity row (every weapon shows at
+    once, read at its own tier), so nothing projects today; kept as the
+    single gate so the tile painters share one no-op."""
+    return False
 
 
 def rarity_passes(item_id: str, rarities=()) -> bool:
-    """Tier gate shared by the browse matcher, the type-chip counts and the
-    Dungeons tab. The Rarity buttons leave exactly one tier in here, so it
-    reads as a single-tier filter; an empty set means no tier gate at all.
-    Every category filters on its real tiers, jewelry included — its
-    Uncommon pieces have a button of their own."""
+    """Tier gate shared by the browse matcher, the type-chip counts, the
+    rarity counts and the Dungeons tab. The Rarity buttons leave exactly one
+    tier in here, so it reads as a single-tier filter; an empty set means no
+    tier gate at all. Every category filters on its real tiers, jewelry
+    included — its Uncommon pieces have a button of their own.
+
+    WEAPONS filter on what the game can HAND THEM OUT at rather than on the
+    row's own rarity: the row is single-rarity, so a display-Rare weapon a box
+    grants at Epic is Epic here, and a boss weapon whose dungeon cannot roll
+    above Rare cannot pass an Epic chip at all."""
     if not rarities:
         return True
+    if idata.category((idata.item(item_id) or {}).get("type")) == "Weapons":
+        return bool(set(idata.obtainable_tiers(item_id)) & set(rarities))
     return idata.item_display_rarity(item_id) in rarities
 
 
@@ -342,9 +422,11 @@ def category_item_ids(category: str, mode: str = "gear") -> tuple[str, ...]:
 @lru_cache(maxsize=None)
 def category_rarities(category: str, mode: str = "gear") -> frozenset[str]:
     """The rarities the current tab's items actually roll — the Rarity
-    buttons don't carry dead tiers (no weapon in the data is Epic, so the
-    Epic button would filter nothing on the Weapons tab). The check is
-    cosmetic only: a tier absent here can't change any row."""
+    buttons don't carry dead tiers (no gear in the catalog is Legendary, so
+    that button would filter nothing anywhere). The check is cosmetic only:
+    a tier absent here can't change any row. The Weapons tab carries no
+    Rarity row at all (every weapon shows at once), so its tiers never reach
+    the buttons."""
     return frozenset(idata.item_display_rarity(i)
                      for i in category_item_ids(category, mode))
 
@@ -369,8 +451,15 @@ def rarity_counts(cls: str = "", only: bool = False, rating: str = "",
                 continue         # Only: dual-class gear drops out
         if rating and rating not in idata.gear_ratings(iid):
             continue
-        rar = idata.item_display_rarity(iid)
-        out[rar] = out.get(rar, 0) + 1
+        if idata.category(it.get("type")) == "Weapons":
+            # a weapon is counted under every rung the game can hand it out at
+            # ('Epic · 4' = four weapons can come out Epic), not under its
+            # single row rarity — that is what the chips now filter on
+            for rar in idata.obtainable_tiers(iid):
+                out[rar] = out.get(rar, 0) + 1
+        else:
+            rar = idata.item_display_rarity(iid)
+            out[rar] = out.get(rar, 0) + 1
     return out
 
 

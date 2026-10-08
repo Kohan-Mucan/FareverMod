@@ -18,8 +18,9 @@ import pytest
 from farever_companion.core.dps_tracker import CombatSession, DpsTracker
 from farever_companion.ui.dps_source_text import empty_hint
 from farever_companion.ui.pages.combat_page import (
-    CombatPageMixin, _CP_SEGMENTS, _CP_SEGMENT_ORDER, _cp_empty_hint,
+    CombatPageMixin, _CP_SEGMENTS, _CP_SEGMENT_ORDER,
 )
+from farever_companion.ui.pages.combat_roster import _cp_empty_hint
 from tests.dps_fakes import _FakeModel  # noqa: F401
 
 
@@ -75,7 +76,9 @@ def test_auto_follows_the_running_fight(tracker):
 
     tracker.in_dummy_fight = False
     tracker.in_boss_fight = True
-    assert tracker.session_for("auto") is tracker.boss_session
+    # Flag alone never arms the board: no damage anywhere yet, so auto
+    # falls through to Overall — the boss board waits for boss damage.
+    assert tracker.session_for("auto") is tracker.overall_session
 
 
 def test_auto_follows_adds_while_the_boss_board_is_empty(tracker):
@@ -100,6 +103,30 @@ def test_auto_follows_adds_while_the_boss_board_is_empty(tracker):
         target_name="boss", target_addr=2, target_hp=10.0, target_max_hp=100.0,
         damage=50.0, caster_name="You", is_me=True, skill_id="s2",
         skill_name="Skill", is_crit=False)
+    assert tracker.session_for("auto") is tracker.boss_session
+
+
+def test_auto_stays_on_trash_for_an_uncertain_boss_claim(tracker):
+    """An engine-only boss latch (hard/heroic champion mob, instance names
+    no boss) with an empty boss board must not blank the meter: the trash
+    run stays on the board, skills and timer intact. A certain (declared)
+    latch still arms the empty boss board."""
+    tracker.trash_session.record_hit(
+        target_name="mob", target_addr=3, target_hp=10.0,
+        target_max_hp=100.0, damage=500.0, caster_name="You", is_me=True,
+        skill_id="s3", skill_name="Skill", is_crit=False)
+    tracker.in_boss_fight = True
+    tracker._boss_claim_uncertain = True
+    assert tracker.session_for("auto") is tracker.trash_session
+    # ...and a declared boss with an empty board waits too now: the board
+    # follows damage, not the flag, so pre-pull the trash run stays up.
+    tracker._boss_claim_uncertain = False
+    assert tracker.session_for("auto") is tracker.trash_session
+    # Boss damage lands -> the boss board wins.
+    tracker.boss_session.record_hit(
+        target_name="boss", target_addr=2, target_hp=10.0,
+        target_max_hp=100.0, damage=50.0, caster_name="You", is_me=True,
+        skill_id="s4", skill_name="Skill", is_crit=False)
     assert tracker.session_for("auto") is tracker.boss_session
 
 
@@ -201,7 +228,8 @@ def test_the_selector_offers_every_segment_session_for_understands(tracker):
     # segment that actually is.
     assert tracker.session_for("auto") is tracker.overall_session
     tracker.in_boss_fight = True
-    assert tracker.session_for("auto") is tracker.boss_session
+    # A bare flag arms nothing: the boss board waits for boss damage.
+    assert tracker.session_for("auto") is tracker.overall_session
 
 
 @pytest.mark.parametrize("segment", ["auto", "boss", "trash", "boss_adds",
@@ -271,6 +299,14 @@ def test_auto_and_overall_keep_the_generic_empty_hint(segment):
     hint = _cp_empty_hint(None, _empty_session(), segment)
     assert hint == empty_hint(None, default)
     assert "Pick Auto" not in hint
+
+
+def test_no_reader_means_no_empty_text():
+    """With no game attached there is no reader, so the empty board says
+    nothing at all (callers hide their label on "") rather than stating
+    that numbers come from damage events."""
+    assert empty_hint(None, "default") == ""
+    assert _cp_empty_hint(None, _empty_session(), "auto") == ""
 
 
 # --- the picker as BUILT ---------------------------------------------------

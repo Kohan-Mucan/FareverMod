@@ -8,6 +8,11 @@ Epic set) and the faction row is the only place showing the whole shared
 pool. Its dungeon list (always shown, both views, 2 columns) carries each
 boss's icon — every button picks its boss, the same single logic as the
 left-column rows, while the SHARED SET header jumps back to the full list.
+Each boss row's weapon chips are painted at the highest rung the game can
+hand that piece out at (`support.weapon_tiers`): every boss weapon is
+Rare-only, so its chip reads Rare, while the four craft weapons would read
+Legendary. No switch — the row always shows the max, so there is nothing
+to pick.
 
 RIGHT PANE (`dungeon_render.py`, re-exported here): the picked boss's
 signature weapons on top (when a boss row is clicked), then the faction's
@@ -17,9 +22,10 @@ faction view carries it (Nightling is the one family whose pool is BOUGHT,
 not dropped: its header names Mira, Demon Huntress instead of claiming
 "drops in: <bosses>") — plus the heroic EPIC sets, one block per boss until
 a boss row is clicked, which narrows the pane to that boss alone. Both
-tiers always show together (Rare pool + Epic heroic sets): this tab ignores
-the Rarity buttons — only the class/Only/rating chips filter it — so there
-is no tier switch to flip. Clicking a tile opens the item's detail card.
+tiers always show together (Rare pool + Epic heroic sets): the browse tab's
+Rarity row is hidden here and only the class/Only/rating chips filter it.
+Each weapon chip reads at its own max rung, so no tier control is needed.
+Clicking a tile opens the item's detail card.
 """
 from __future__ import annotations
 
@@ -32,7 +38,11 @@ from ....data import icons
 from ....data import items as idata
 from .support import FACTION_EMOJI as _FACTION_EMOJI, faction_label
 from .cache_box import vendor_line
-from .dungeon_box import show_box, weapon_chip as _weapon_chip
+from .dungeon_box import (
+    show_box,
+    weapon_chip as _weapon_chip,
+)
+from .support import weapon_tiers
 from .dungeon_render import (  # noqa: F401  (re-exports, see __all__ below)
     _dungeon_grid,
     _dungeon_jump_button,
@@ -81,6 +91,7 @@ class DungeonView(QtWidgets.QScrollArea):
         self._sel: tuple[str, str] | None = None
         self._fac = ""
         self._faction_history: list[str] = []
+
 
         # faction chips — one active at a time, and WRAPPING onto a second
         # row: five labels + their counts need ~940 px while this pane is
@@ -323,6 +334,7 @@ class DungeonView(QtWidgets.QScrollArea):
 
     def _boss_row(self, g: dict, b: dict) -> QtWidgets.QFrame:
         fac = g["faction"]
+        key = (fac, b["boss_id"])
         row = QtWidgets.QFrame()
         row.setObjectName("Card")
         h = QtWidgets.QHBoxLayout(row)
@@ -343,14 +355,18 @@ class DungeonView(QtWidgets.QScrollArea):
         nm.setTextInteractionFlags(QtCore.Qt.NoTextInteraction)
         h.addWidget(nm, 2)
         for wid in b["weapons"]:
-            # this tab shows both tiers at once — the Rarity buttons don't
-            # gate it, only the class/Only/rating chips do
+            # this tab shows both tiers at once — the Rarity rail is hidden
+            # here, so only the class/Only/rating chips gate it
             if not _usable(self._page, wid, ignore_rarity=True):
                 continue
-            h.addWidget(_weapon_chip(self._page, wid), 3)
+            # always read at the highest rung the game hands the piece out
+            # at: every boss-dropped weapon rolls Rare/Epic/Legendary, so
+            # their chips read Legendary with full bands
+            tiers = weapon_tiers(wid)
+            h.addWidget(
+                _weapon_chip(self._page, wid, tiers[-1] if tiers else None), 3)
         row.setCursor(QtCore.Qt.PointingHandCursor)
         row.setFocusPolicy(QtCore.Qt.NoFocus)
-        key = (fac, b["boss_id"])
         row.mouseReleaseEvent = lambda ev, k=key: (self.toggle(*k),
                                                    ev.accept())
         return row

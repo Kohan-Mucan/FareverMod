@@ -1,10 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for FareverPal — the single source of build truth.
+"""PyInstaller spec for FareverMod — the single source of build truth.
 
 Committed so the exact bundle contents are version controlled and don't drift
 between machines. Build with:
 
-    pyinstaller --noconfirm FareverPal.spec
+    pyinstaller --noconfirm FareverMod.spec
 
 Key properties:
   - one-file, windowed, branded with assets/app_icon.ico.
@@ -134,7 +134,7 @@ else:
 # UPGRADE CHECK: the whitelist silently drops any PySide6 binary not listed
 # here, so after every PySide6/Qt upgrade re-verify by launching the built exe
 # and enumerating loaded modules (PowerShell):
-#   $p = Get-Process FareverPal; $p.Modules | ? {$_.ModuleName -match '^Qt|opengl'} | % {$_.ModuleName}
+#   $p = Get-Process FareverMod; $p.Modules | ? {$_.ModuleName -match '^Qt|opengl'} | % {$_.ModuleName}
 # Only the modules in QT_KEEP (plus shiboken6/pyside6 runtimes) may load.
 QT_KEEP = {
     "PySide6/Qt6Core.dll", "PySide6/Qt6Gui.dll", "PySide6/Qt6Widgets.dll",
@@ -313,7 +313,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="FareverPal",
+    name="FareverMod",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

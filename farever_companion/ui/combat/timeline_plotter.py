@@ -96,12 +96,8 @@ class _CombatTimelinePlotter(QtWidgets.QFrame):
             p.drawLine(pad_l, int(gy), pad_l + plot_w, int(gy))
 
         if not self.session or (not self.session.timeline and not self.session.player_timeline):
-            p.setPen(QtGui.QColor(theme.DIM))
-            font = p.font()
-            font.setPointSize(10)
-            p.setFont(font)
-            p.drawText(QtCore.QRectF(0, 0, w, h), QtCore.Qt.AlignCenter,
-                       "📈 Waiting for combat events to plot burst timeline...")
+            # no placeholder text: an empty grid with axes needs no
+            # explanation, and there is no reader to report on here
             return
 
         active_compare = []

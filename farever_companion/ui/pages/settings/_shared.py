@@ -136,9 +136,9 @@ _LOOT_COLORS = {
     "All": theme.TEXT,
     "Common+": theme.RARITY.get("Common", "#c2c6d0"),
     "Uncommon+": theme.RARITY.get("Uncommon", "#56d364"),
-    "Rare+": theme.RARITY.get("Rare", "#539bf5"),
-    "Epic+": theme.RARITY.get("Epic", "#c297ff"),
-    "Legendary": theme.RARITY.get("Legendary", "#f0a836"),
+    "Rare+": theme.RARITY.get("Rare", "#2f7de1"),
+    "Epic+": theme.RARITY.get("Epic", "#9d5cff"),
+    "Legendary": theme.RARITY.get("Legendary", "#f59e0b"),
 }
 
 

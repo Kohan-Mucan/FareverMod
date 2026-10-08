@@ -2,7 +2,7 @@
 setlocal
 cd /d %~dp0
 echo ============================================================
-echo  FareverPal - Startup Import Check
+echo  FareverMod - Startup Import Check
 echo ============================================================
 echo.
 echo  Imports the app entry chain (run.py / app / control_panel /
@@ -32,7 +32,7 @@ if errorlevel 1 (
     echo.
     echo ============================================================
     echo  FAILURE: the app entry chain does not import cleanly.
-    echo  Fix the ImportError above before launching FareverPal.
+    echo  Fix the ImportError above before launching FareverMod.
     echo ============================================================
     echo.
     pause

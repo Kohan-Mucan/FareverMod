@@ -598,7 +598,8 @@ def hero_buffs(proc: Proc, hl: Hl, hero_addr: int) -> list[dict]:
                 if is_ptr(ip):
                     src = _string_field(hl, ip, ("kind", "id", "itemId"), None)
             out.append({"kind": kind or "?", "stacks": stacks,
-                        "duration": dur, "source_item": src})
+                        "duration": dur, "source_item": src,
+                        "_addr": e})
         except (ProcError, OSError):
             continue
     _log(f"buff: {len(out)} rows from {len(entries)} entries")

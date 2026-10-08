@@ -60,7 +60,7 @@ def _write_dll(folder: str, name: str, content: bytes) -> str:
         f.write(content)
     return path
 def test_reference_checksums_are_authoritative_over_port_signature(tmp_path):
-    """A 3rd-party dinput8.dll embedding 127.0.0.1:49152 is NOT FareverPal's
+    """A 3rd-party dinput8.dll embedding 127.0.0.1:49152 is NOT FareverMod's
     proxy while reference checksums are available — the old signature check
     accepted it, which is why the game-folder check never reported '3rd party'."""
     proc.invalidate_proxy_cache()
@@ -111,7 +111,7 @@ def test_reference_dlls_classify_as_farever(tmp_path):
         assert proc.is_farever_proxy(p) is True
 def test_detect_combat_bridge_flags_third_party_dll(tmp_path):
     """detect_combat_bridge() marks a foreign dinput8.dll in the game folder
-    as 3rd-party, and keeps that flag when FareverPal's own proxy is present
+    as 3rd-party, and keeps that flag when FareverMod's own proxy is present
     alongside it."""
     proc.invalidate_proxy_cache()
     if not any(os.path.isfile(os.path.join(_REF_DIR, name)) for name in _REF_DLLS):
@@ -203,7 +203,7 @@ def test_is_module_loaded_fresh_sees_unload_immediately(monkeypatch):
     proc._MODULE_SNAPSHOT_TTL = 2.0
 def test_signature_fallback_only_without_reference_dlls(tmp_path, monkeypatch):
     """Without any reachable reference DLLs (old frozen build with no bundled
-    dps_bridge) the embedded telemetry signature still recognizes FareverPal's
+    dps_bridge) the embedded telemetry signature still recognizes FareverMod's
     proxy — the fallback must keep working, but only then."""
     proc.invalidate_proxy_cache()
     monkeypatch.setattr(proc, "get_reference_checksums", lambda: {})

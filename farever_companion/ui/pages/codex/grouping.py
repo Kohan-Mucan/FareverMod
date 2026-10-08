@@ -24,6 +24,14 @@ _CODEX_GROUP_QSS = (
     f"color:{theme.ACCENT}; border-color:{theme.ACCENT};}}"
 )
 
+# The family bar is a GRID, not a flowing row: six keys per line, then the next
+# six on the next line. The Pets view has twelve (All + eleven families) and read
+# as one long row that wrapped wherever the window happened to end - two tidy
+# rows of six say "these are the families" instead, and a chip never moves
+# because the window changed width. Mounts (14) and Gliders (12) use the same
+# six, so the three sub-views start their second line at the same place.
+_GROUP_BAR_COLUMNS = 6
+
 
 class CodexGroupingMixin:
     def _codex_sub_group(self, item: dict, rid: str, collection_z0: bool) -> str:
@@ -154,6 +162,12 @@ class CodexGroupingMixin:
             self._reset_status_chips()
             return
         if current_rid == "Z0" or tab_label in ("Others", "Other"):
+            # The NPC / Rep lists render no cards, so the card counts would be
+            # a lie there — plain labels, like the Chests/Orbs lists.
+            if getattr(self, "_npc_list_mode", False) or \
+                    getattr(self, "_rep_list_mode", False):
+                self._reset_status_chips()
+                return
             total, visible, hidden = self._codex_tab_status_counts("Z0")
         elif codex.is_zone_region(current_rid):
             total, visible, hidden = self._codex_tab_status_counts(current_rid)
@@ -166,12 +180,16 @@ class CodexGroupingMixin:
         """Second sub-menu on the Collection Pets/Mounts/Gliders views: an
         All + one-toggle-per-species-family filter bar that narrows the grid
         to a single family. The buttons are (re)built by
-        `_rebuild_codex_group_bar` — this owns the frame + flow layout they
-        live in. Hidden on the Chests/Orbs lists and every other tab."""
-        from ..items.support import FlowLayout
+        `_rebuild_codex_group_bar` — this owns the frame + the fixed
+        `_GROUP_BAR_COLUMNS`-wide grid they live in. Hidden on the Chests/Orbs
+        lists and every other tab."""
         self._group_sub_bar = QtWidgets.QFrame()
         self._group_sub_bar.setStyleSheet("QFrame { background: transparent; border: 0; }")
-        self._group_sub_lay = FlowLayout(self._group_sub_bar, margin=0, spacing=6)
+        lay = QtWidgets.QGridLayout(self._group_sub_bar)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self._group_sub_lay = lay
         self._group_sub_bar.setVisible(False)
         return self._group_sub_bar
 
@@ -192,7 +210,10 @@ class CodexGroupingMixin:
         self._group_btn_group.setExclusive(True)
         self._group_sub_btns = {}
 
+        placed = 0
+
         def _mk(label: str, key: str, count: int) -> None:
+            nonlocal placed
             btn = QtWidgets.QPushButton(f"{label} ({count})")
             btn.setCheckable(True)
             btn.setFixedHeight(24)
@@ -202,7 +223,11 @@ class CodexGroupingMixin:
             btn.clicked.connect(self._on_codex_group_toggled)
             self._group_btn_group.addButton(btn)
             self._group_sub_btns[key] = btn
-            self._group_sub_lay.addWidget(btn)
+            # six to a line, in the order they are listed: All first, then the
+            # families - the second line starts with the seventh key
+            self._group_sub_lay.addWidget(
+                btn, placed // _GROUP_BAR_COLUMNS, placed % _GROUP_BAR_COLUMNS)
+            placed += 1
 
         family_counts = self._codex_group_counts(sub_tag, status_filter)
         _mk("All", "All", sum(c for _g, c in family_counts))

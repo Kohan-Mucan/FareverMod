@@ -1,7 +1,7 @@
 """Named single-instance mutex, and the focus hand-off when a second launch loses.
 
 The app already refuses a second instance on the same data folder
-(``QLockFile`` on ``fareverpal.lock``, ``app._instance_lock``). That guard
+(``QLockFile`` on ``farevermod.lock``, ``app._instance_lock``). That guard
 exists for DATA integrity: settings.json / collection.json / progress_*.json are
 rewritten wholesale from memory, so two writers lose data. It is not a
 UX guard, and the difference showed up live on 2026-10-01.
@@ -39,12 +39,12 @@ from ctypes import wintypes
 
 #: The window title the main window sets (ui/control_panel.py). Matching on it
 #: is what lets the loser focus the winner instead of just exiting.
-WINDOW_TITLE = "Farever Pal"
+WINDOW_TITLE = "FareverMod"
 
 #: Prefix for the kernel object name. "Local\" scopes it to the session, so a
 #: second user on the same machine (a shared PC, a service account running the
 #: app for tests) is a separate namespace and is never refused.
-_MUTEX_PREFIX = "Local\\FareverPal.SingleInstance."
+_MUTEX_PREFIX = "Local\\FareverMod.SingleInstance."
 
 
 def mutex_name(folder: str) -> str:

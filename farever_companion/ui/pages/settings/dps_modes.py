@@ -216,7 +216,7 @@ states."""
         """True when Option 1's drop-in proxy is actually present.
 
         Uses the same hash-verified check as Live Diagnostics: the DLL sitting
-        in the game folder must match a FareverPal reference DLL (a 3rd-party
+        in the game folder must match a FareverMod reference DLL (a 3rd-party
         mod's file that merely shares the name never counts), or the verified
         proxy must already be loaded by the running Farever.exe.
         """
@@ -302,7 +302,7 @@ states."""
 
             # Update action button. For Option 1 the button mirrors whether
             # the drop-in proxy is actually installed: "✓ ACTIVE MODE" only
-            # when a hash-verified FareverPal DLL sits in the game folder (or
+            # when a hash-verified FareverMod DLL sits in the game folder (or
             # is live in the running game); with no DLL installed it reads
             # "✗ No DLL Installed" so the card never claims to be active
             # before the proxy can fire.

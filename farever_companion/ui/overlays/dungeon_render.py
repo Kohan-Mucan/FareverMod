@@ -123,13 +123,16 @@ class DungeonRenderMixin:
         # --- ENEMIES (grouped; clones keyed by raw id so TRUE/FALSE don't merge)
         groups: dict[str, list] = {}
         for e, d, kind in self._dg_enemies:
-            gkey = (e.unit_id or "?") if kind in ("boss", "clone_real", "avoid") \
+            gkey = (e.unit_id or "?") if kind in ("boss", "clone_real",
+                                                   "avoid", "champion") \
                 else self._dg_display_name(e.unit_id or "")
             groups.setdefault(gkey, []).append((e, d, kind))
 
-        # Bosses pinned above; avoid-clones stay in the mob list.
+        # Bosses pinned above; champions beside them; avoid-clones stay in
+        # the mob list.
         boss_groups = {n: v for n, v in groups.items()
-                       if any(k in ("boss", "clone_real") for _, _, k in v)}
+                       if any(k in ("boss", "clone_real", "champion")
+                              for _, _, k in v)}
         trash_groups = {n: v for n, v in groups.items() if n not in boss_groups}
 
         def _enemy_row(name, variants):
@@ -139,6 +142,7 @@ class DungeonRenderMixin:
             kinds = {k for _, _, k in variants}
             is_avoid = "avoid" in kinds
             is_boss = "boss" in kinds or "clone_real" in kinds
+            is_champion = "champion" in kinds and not is_boss
             if is_boss:
                 # Bind to the biggest HP pool (rift mini-bosses share names).
                 peaks = getattr(self, "_dg_hp_peaks", {})
@@ -164,6 +168,13 @@ class DungeonRenderMixin:
                 col = name_col = theme.GOLD
                 sub = "★ REAL BOSS" if "clone_real" in kinds else ""
                 border = None          # no icon-box border on bosses (user pref)
+            elif is_champion:
+                # engine-claimed but data-unknown (hard/heroic champion mob):
+                # purple name + CHAMPION sub, so it never reads as the boss
+                col = theme.DANGER
+                name_col = theme.rarity_color("Epic")
+                sub = "⚔ CHAMPION"
+                border = None
             else:
                 is_elite = _dg_is_elite(uid)
                 # elite: silver tile, red name, 4px outline
@@ -188,9 +199,10 @@ class DungeonRenderMixin:
                 value = hp_txt or "HP --"
             else:
                 value = f"{d:>6.0f}m"
-            thick = 4 if (is_boss or is_avoid or _dg_is_elite(uid)) else 2
+            thick = 4 if (is_boss or is_champion or is_avoid
+                          or _dg_is_elite(uid)) else 2
             # plain trash gets no second line at all: no HP%, no noise
-            if is_boss or is_avoid or _dg_is_elite(uid):
+            if is_boss or is_champion or is_avoid or _dg_is_elite(uid):
                 # 2nd line = who the mob is targeting.
                 tgt = self.model.foe_target_line(e)
                 parts = [x for x in (sub, tgt) if x]

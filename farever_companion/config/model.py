@@ -56,6 +56,21 @@ class Settings(_ProfileAccessors):
 
     # ===================== Codex =====================
     codex_options: list = field(default_factory=lambda: ["pets_compact"])
+    # The NPC directory's rail filters (`ui/pages/codex/npc_list.py`). The family
+    # buttons are ONE at a time, so the selected family is a plain string key and
+    # the shipped default is the general vendor - `npc` (the plain world NPCs) is
+    # one click away, never on by itself. The zones persist as the OFF set,
+    # unlike every other *_options list here: a zone tag comes out of the GAME
+    # DATA (`poi_locs`), so an ON list would open the tab with whatever a patch
+    # adds already filtered out - the "a placement is simply gone" failure this
+    # view exists to prevent. An empty OFF list (the default) means every zone is
+    # on, and a tag nobody switched off stays on. `codex_npc_options` carries the
+    # rail's one view button the usual ON way, because it is not data-derived:
+    # `show_debug` lists the PTS debug placements and starts OFF (the shipped
+    # default hides them).
+    codex_npc_role: str = "haydn"
+    codex_npc_zones_off: list = field(default_factory=list)
+    codex_npc_options: list = field(default_factory=list)
 
     # ===================== Entity Overlay (HUD) =====================
     entity_layers: list = field(default_factory=lambda: ["chests", "loot", "companions", "orbs", "obelisks", "group_members"])
@@ -335,6 +350,19 @@ class Settings(_ProfileAccessors):
         try:
             if inst.hotkeys:
                 inst.hotkeys = {}
+        except Exception:
+            pass
+        try:
+            # The NPC directory's rail has one family selected at a time and
+            # names every option for what it turns ON, so two old flags must not
+            # survive a load: `haydn_only` (its `Only Haydn` toggle is the Haydn
+            # family button now) and `hide_debug` (its replacement `show_debug`
+            # has the opposite polarity, so a file that said "hide" must not
+            # arrive with the dev rows showing).
+            stale = {"haydn_only", "hide_debug"}
+            opts = [k for k in inst.codex_npc_options if k not in stale]
+            if opts != inst.codex_npc_options:
+                inst.codex_npc_options = opts
         except Exception:
             pass
 

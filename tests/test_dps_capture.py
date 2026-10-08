@@ -1125,7 +1125,7 @@ def test_the_listener_never_shares_the_bridge_port():
     that is already bound or LISTENING, and the loser silently receives nothing.
     That bit twice: first the UDP capture socket (a monitor stole every combat
     event and the Top DPS meter read empty), then the TCP debug relay, where a
-    second FareverPal took subscriber connections and you would have been
+    second FareverMod took subscriber connections and you would have been
     reading another process's stream while believing you were reading the DLL.
 
     Module-wide on purpose: there is no legitimate use left to exempt. An
@@ -1154,7 +1154,7 @@ def test_a_second_relay_cannot_hijack_the_relay_port():
     """A second relay must fail to bind, loudly - not share the port.
 
     This is the TCP twin of the capture-socket rule, and it is what a second
-    FareverPal instance (or a leftover one) would otherwise do: silently take
+    FareverMod instance (or a leftover one) would otherwise do: silently take
     every subscriber connection.
     """
     import socket
@@ -1218,7 +1218,7 @@ def test_a_running_app_without_a_relay_does_not_say_start_the_app():
     debugging session: the app was running the whole time.
     """
     mod = _load_monitor()
-    holders = ["PID 1 [FareverPal.exe]: the FareverPal companion app - its "
+    holders = ["PID 1 [FareverMod.exe]: the FareverMod companion app - its "
                "bridge listener takes the traffic, so this monitor sees nothing"]
     mod._connect_relay = lambda timeout=1.0: None          # no relay answering
     advice = "\n".join(mod._relay_advice(holders))
@@ -1238,7 +1238,7 @@ def test_no_relay_advice_when_the_relay_is_actually_up():
     """A stale answer must not send the user to restart a working setup."""
     mod = _load_monitor()
     mod._connect_relay = lambda timeout=1.0: object()
-    holders = ["PID 1 [FareverPal.exe]: the FareverPal companion app"]
+    holders = ["PID 1 [FareverMod.exe]: the FareverMod companion app"]
     assert mod._relay_advice(holders) == []
 
 
@@ -1344,7 +1344,7 @@ def test_port_clash_names_the_holder_rather_than_guessing(monkeypatch):
     monkeypatch.setattr(dps_bridge, "port_holder_pids", lambda _p: ["111", "222"])
     monkeypatch.setattr(dps_bridge, "_process_details", lambda pids: {
         "111": ("python.exe", r"C:\repo\.venv\Scripts\python.exe dps_bridge\monitor_bridge.py"),
-        "222": ("FareverPal.exe", r"C:\Games\FareverPal.exe"),
+        "222": ("FareverMod.exe", r"C:\Games\FareverMod.exe"),
     })
     lines = dps_bridge.describe_port_clash(49152)
     assert len(lines) == 2
@@ -1877,7 +1877,7 @@ def test_the_uninjector_copy_is_neither_shipped_nor_kept():
     do.
     """
     root = Path(__file__).resolve().parent.parent
-    spec = source_guard.read_text(root / "FareverPal.spec", encoding="utf-8")
+    spec = source_guard.read_text(root / "FareverMod.spec", encoding="utf-8")
     # It may - and should - be NAMED in the spec to explain the decision, but
     # no line of code may reference it: a commented rationale is not a data
     # entry, which is why this cannot be a plain substring check.
@@ -1977,7 +1977,7 @@ def test_the_shipped_injector_carries_no_filename_dispatch():
 # session sat at need_inject with zero events while the log looked healthy.
 UNINJECTOR_OUTPUT = (
     "=======================================================\n"
-    " FareverPal Combat Hook: Hot Uninjector\n"
+    " FareverMod Combat Hook: Hot Uninjector\n"
     "=======================================================\n"
     "[INFO] farever_dps.dll is NOT currently loaded in PID 17092.\n"
     "Nothing to uninject."

@@ -1640,6 +1640,155 @@ def item_display_rarity(item_id: str) -> str:
 
 
 
+@lru_cache(maxsize=1)
+def _container_tier_spans() -> dict[str, frozenset[str]]:
+    """Item id -> every rarity rung a CONTAINER can hand that id out at.
+
+    Built from the containers' own rows (see `container_contents`), where each
+    row reports the span an open can give (`rarity_min`..`rarity_max`). The
+    Hero Weapon Cache is the one box that rolls instead of fixing: its gainItem
+    clamps at Epic and leaves the ceiling open, so its four rows span
+    Epic..Legendary while the same four ids are also sold Rare in town.
+    """
+    out: dict[str, set[str]] = {}
+    for rows in container_contents().values():
+        for row in rows:
+            iid = row.get("item")
+            if not iid:
+                continue
+            lo = row.get("rarity_min") or row.get("rarity") or ""
+            hi = row.get("rarity_max") or row.get("rarity") or lo
+            if lo in RARITY_ORDER and hi in RARITY_ORDER:
+                rungs = RARITY_ORDER[RARITY_ORDER.index(lo):
+                                     RARITY_ORDER.index(hi) + 1]
+            else:
+                rungs = tuple(t for t in (lo, hi) if t)
+            out.setdefault(iid, set()).update(rungs)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+@lru_cache(maxsize=1)
+def _generation_roll_bands() -> tuple[tuple[int, int, frozenset[str]], ...]:
+    """The rarity sheet's gear-drop roll bands, live-read, as
+    (min_level, max_level, rungs-with-a-chance) tuples.
+
+    `rarity.json` rolls every gear drop's rung by level (`generationChance`):
+    Epic opens at 11 (19%), Legendary at 11 (1%), both climbing with level —
+    which is how a dungeon boss hands out a Rare-authored weapon at Epic.
+    Read here, never restated, so a patch that re-levels a band moves the
+    rungs with it. Missing/unbundled sheet -> () (no roll rungs claimed).
+    """
+    try:
+        from .. import cdb
+        rows = cdb.lines("rarity")
+    except Exception:
+        return ()
+    chances: dict[str, list] = {}
+    for r in rows or ():
+        rid = (r.get("id") or "").title()
+        gen = (r.get("props") or {}).get("generationChance") or []
+        if rid and gen:
+            chances[rid] = gen
+    bands: dict[tuple[int, int], set[str]] = {}
+    for rid, gen in chances.items():
+        for band in gen:
+            try:
+                chance = float(band.get("chance") or 0)
+            except (TypeError, ValueError):
+                continue
+            if chance <= 0:
+                continue
+            key = (int(band.get("minLevel") or 0),
+                   int(band.get("maxLevel") or 0))
+            bands.setdefault(key, set()).add(rid)
+    return tuple((lo, hi, frozenset(rungs))
+                 for (lo, hi), rungs in sorted(bands.items())
+                 if rungs)
+
+
+def _generation_roll_rungs(level: int | None) -> frozenset[str]:
+    """The rungs a dungeon gear drop can roll, from the sheet's bands.
+
+    The bands gate rungs by LEVEL (Epic/Legendary open at 11), but a
+    dungeon's sheet level is its floor: every dungeon ships Normal / Veteran
+    / Heroic versions that scale the effective drop level up, so any boss
+    weapon can roll any rung the bands ever open — Twin Fangs of Ratsar
+    (base dungeon level 10) included. The level itself is therefore not
+    consulted; its presence only proves the weapon IS a dungeon drop. ()
+    when the weapon drops from no dungeon — no roll rungs claimed.
+    """
+    if not isinstance(level, int):
+        return frozenset()
+    out: set[str] = set()
+    for _, _, rungs in _generation_roll_bands():
+        out.update(rungs)
+    return frozenset(out)
+
+
+@lru_cache(maxsize=1)
+def _dungeon_weapon_levels() -> dict[str, int]:
+    """Signature-weapon id -> the highest level that drops it: its bosses'
+    dungeon levels (a weapon shared by two bosses rolls at the higher one).
+    A boss the dungeon sheet never claims (rift demons) falls back to its
+    unit level; a weapon with neither keeps no level and rolls nothing.
+    Live-read, so a patch that re-levels a dungeon moves the rungs."""
+    from .. import dungeons
+    by_boss: dict[str, int] = {}
+    for d in dungeons.load_dungeons():
+        bid = d.get("boss_id")
+        lvl = d.get("level")
+        if bid and isinstance(lvl, int):
+            by_boss[bid] = max(by_boss.get(bid, 0), lvl)
+    units = _unit_levels()
+    out: dict[str, int] = {}
+    for bid, iids in _boss_weapon_ids().items():
+        lvl = by_boss.get(bid) or units.get(bid)
+        if not isinstance(lvl, int):
+            continue
+        for iid in iids:
+            out[iid] = max(out.get(iid, 0), lvl)
+    return out
+
+
+@lru_cache(maxsize=None)
+def obtainable_tiers(item_id: str) -> tuple[str, ...]:
+    """The rarity rungs the game can actually hand this item out at, in the
+    game's ladder order — DERIVED from the drop rows, never asserted.
+
+    An item row carries ONE `rarity`, so the row alone cannot say that the same
+    weapon is sold Rare in town and handed out Epic by a box. The containers
+    can, and they are the only thing that can: this unions the item's own
+    DISPLAY rarity (what a vendor sells it as) with every rung of every
+    container span that grants its id (`_container_tier_spans`).
+
+    Weapons are why this exists. Besides the boxes, a dungeon boss rolls its
+    drops' rung (the rarity sheet's `generationChance`: Epic/Legendary open
+    at level 11 and climb), and every dungeon's difficulties scale the drop
+    level — so EVERY boss-dropped weapon can come out Rare, Epic or
+    Legendary, and the Dungeons tab reads each chip at that max
+    (`_dungeon_weapon_levels`). Only rungs AT or ABOVE the display rung are
+    added: the roll is never used to drag a piece below what the game sells
+    it as. Armor keeps its own rows (an Epic set piece is a different id),
+    so the roll union is weapons-only. Nothing here is a hand list: a patch
+    that re-levels a box's clamp or closes a roll band moves these rungs
+    with it.
+    """
+    if not item_id:
+        return ()
+    rungs = set(_container_tier_spans().get(item_id) or ())
+    own = item_display_rarity(item_id)
+    if own:
+        rungs.add(own)
+    it = _data().get("items", {}).get(item_id) or {}
+    if category(it.get("type")) == "Weapons" and own in RARITY_ORDER:
+        floor = RARITY_ORDER.index(own)
+        lvl = _dungeon_weapon_levels().get(item_id)
+        for rung in _generation_roll_rungs(lvl):
+            if rung in RARITY_ORDER and RARITY_ORDER.index(rung) >= floor:
+                rungs.add(rung)
+    return tuple(t for t in RARITY_ORDER if t in rungs)
+
+
 @lru_cache(maxsize=None)
 def has_guild_merchant(item_id: str) -> bool:
     """True when any of the item's drop sources is a Guild Merchant (a
@@ -2772,7 +2921,11 @@ def _dungeon_label(d: dict) -> str:
 # Two wrinkles the wiring has to absorb. The Nightling rifts name their
 # table after the DUNGEON, not the boss unit (`Maat_LT2` / `Shaarlize_LT2`
 # against the boss ids DemonSuperElite / DemonSuperElite_Fairy), so a table
-# key that isn't itself a boss unit resolves through the dungeon sheet.
+# key that isn't itself a boss unit resolves through the dungeon sheet — by
+# the row's title, or by its id stem (`rift_maat` -> `maat`). The id is what
+# carries it: those rows are TITLED after the boss ("Rift Nightking Maat
+# Demon"), so their title holds no trace of the name their table is filed
+# under.
 # And this build ships the three `InfusionPattern_Nightling_*` items with
 # no `*_LT2` row at all — neither rift lists one — so the scan's own drop
 # rows are read too: whichever source lands first does the wiring.
@@ -2782,7 +2935,8 @@ def _heroic_key_to_boss() -> dict[str, str]:
     for every table named after its own boss unit (Gatsbee_LT2 -> Gatsbee),
     which is why callers only consult it for keys that aren't a boss unit:
     the Nightling rifts are the exception (maat / shaarlize -> the
-    DemonSuperElite pair)."""
+    DemonSuperElite pair), and the rift row states that name in its id, not
+    in its title — so the id stem is read too."""
     from .. import dungeons
     out: dict[str, str] = {}
     for d in dungeons.load_dungeons():
@@ -2792,6 +2946,15 @@ def _heroic_key_to_boss() -> dict[str, str]:
         for alias in (d.get("name"), d.get("ingame_name")):
             if alias:
                 out.setdefault(str(alias).strip().lower(), bid)
+        # The rift rows are titled after the boss ("Rift Nightking Maat
+        # Demon"), so nothing in that title names the table they are filed
+        # under (`Maat_LT2`). Their id does: `rift_maat` -> `maat`. Read the
+        # stem for the rift-prefixed ids only — the other dungeon ids end in
+        # a place or POI word ('hive', 'ruins') that would alias a table key
+        # onto the wrong boss.
+        rid = str(d.get("id") or "").strip().lower()
+        if rid.startswith("rift_") and len(rid) > 5:
+            out.setdefault(rid[5:], bid)
     return out
 
 

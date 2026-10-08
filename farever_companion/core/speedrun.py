@@ -655,7 +655,7 @@ def merge_history_rows(*groups, limit: int = SHARED_HISTORY_LIMIT) -> list:
 class ModeLatch:
     """Latches the last confidently auto-detected difficulty *during* a run.
 
-    The Normal↔Hard mixups Hooch saw came from resolving difficulty at the
+    The Normal↔Veteran mixups Hooch saw came from resolving difficulty at the
     finish frame, the exact moment the boss dies/despawns, when its level is
     flaky or unreadable, so it fell back to the manual selector (often the wrong
     one). The boss's level is reliable while it's alive and fighting, so we

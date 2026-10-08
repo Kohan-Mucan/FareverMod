@@ -34,8 +34,18 @@ TAG_BADGES: dict[str, tuple[str, str, str]] = {
                   "Damage from your gear, not from your rotation"),
     "passive": ("◈ passive", theme.ACCENT_LIGHT, "A skill in your rotation"),
     "summon": ("✦ summon", theme.GOLD, "Your weapon's summon, or its own attacks"),
+    # Somebody ELSE's party buff, credited here because the game dealt this
+    # boost to you while the buff was on you (Swarmstrike Accord and anything
+    # shaped like it). The damage IS yours - you were the one hitting - but you
+    # did not cast the skill, and a row that reads as your own cast is how a
+    # weaponless player ends up looking like a 40k-damage main without ever
+    # touching the weapon.
+    "group": ("◈ group", theme.ACCENT,
+              "Damage from another player's party buff, dealt to you while it was active"),
 }
-TAG_BADGE_WIDTH = 58      # the label's own width, in px
+# Wider than the other three: "◈ group" is the longest of the four captions, and
+# a badge that elides its own text is worse than no badge.
+TAG_BADGE_WIDTH = 64      # the label's own width, in px
 
 
 def strip_tag_suffix(name: str) -> str:
@@ -458,8 +468,17 @@ class SkillRow(QtWidgets.QWidget):
 
     # --- public API -------------------------------------------------------#
 
-    def set_skill(self, skill_id: str, name: str) -> None:
-        """Set the icon + name (call once or when the skill identity changes)."""
+    def set_skill(self, skill_id: str, name: str,
+                  from_group_buff: bool = False) -> None:
+        """Set the icon + name (call once or when the skill identity changes).
+
+        ``from_group_buff`` badges the row "group": the damage was dealt to
+        this player by another player's party buff. It arrives here rather than
+        being derived from the skill id because it is a fact ABOUT THE FIGHT
+        (was this buff on more than one player when it landed?), not a property
+        of the skill - the same Accord row is a group tag on the four players
+        it boosted and a plain row on the one who cast it.
+        """
         self._skill_id = skill_id or ""
         new_icon = _skill_icon(skill_id,
                                size=(14 if self._density == "compact" else 20))
@@ -470,7 +489,14 @@ class SkillRow(QtWidgets.QWidget):
             self._icon_lbl.setCursor(QtCore.Qt.PointingHandCursor)
         self._name_lbl.set_full(_cap_name(strip_tag_suffix(name or ""),
                                           NAME_MAX_CHARS))
-        apply_tag_badge(self._tag_lbl, skill_row_tag(skill_id), name or "")
+        kind = skill_row_tag(skill_id)
+        if from_group_buff:
+            # "group" outranks the others: it says whose damage this really is,
+            # which is the question the row exists to answer. "(pet)" still wins
+            # inside apply_tag_badge - a pet's damage is a fact too, and it is
+            # the more specific of the two.
+            kind = "group"
+        apply_tag_badge(self._tag_lbl, kind, name or "")
 
     def update(self, sp, share_pct: float, mode: str = "damage") -> None:
         """Refresh one row from a SkillParse + its share of the parent total.
@@ -566,6 +592,16 @@ class SkillRow(QtWidgets.QWidget):
                 self._fmt_avg_cell(sp.avg_hit(), sp.min_hit, sp.max_hit))
         if self._pct_lbl is not None:
             self._pct_lbl.setText(f"{pct_val:.0f}%")
+        # Crit DAMAGE under the crit count when the archive recorded it: the
+        # rate says how often a skill crit, this says how much of its damage
+        # arrived that way, and neither can be read off the other. 0.0 means the
+        # archive predates the field, so the line is omitted rather than
+        # claiming "no crit damage" about a fight that simply was not measured.
+        crit_dmg = float(getattr(sp, "crit_damage", 0.0) or 0.0)
+        crit_line = ""
+        if crit_dmg > 0 and sp.damage > 0:
+            crit_line = (f"<br>Crit damage: <b>{crit_dmg:,.1f}</b> "
+                         f"({crit_dmg / sp.damage * 100.0:.1f}% of the total)")
         tooltip = (
             f"<b>{strip_tag_suffix(sp.name)}</b> ({sp.skill_id})<br>"
             f"Total: <b>{sp.damage:,.1f}</b> ({pct_val:.1f}%)<br>"
@@ -573,6 +609,7 @@ class SkillRow(QtWidgets.QWidget):
             f"({sp.crit_pct:.1f}%)<br>"
             f"Min: <b>{min_str}</b> | Avg: <b>{sp.avg_hit():,.1f}</b> | "
             f"Max: <b>{max_str}</b>"
+            f"{crit_line}"
         )
         # The gear line ("From your gear: ...") was REMOVED 2026-10-03: the row
         # now carries the kind as a plain label beside the name, and the item it
@@ -580,6 +617,13 @@ class SkillRow(QtWidgets.QWidget):
         # player reads for numbers (reported: "thats something we made today
         # that i never wanted there"). The item is still named in the skill
         # popup's gear section, which is where a player goes looking for it.
+
+        # A "group" row's number is real damage this player was dealt, so the
+        # tooltip says where it came from rather than leaving a reader to think
+        # the badge means the number should not be counted.
+        if getattr(sp, "from_group_buff", False):
+            tooltip += ("<br><i>Damage from another player's party buff, "
+                        "dealt to you while it was active.</i>")
 
         subs = getattr(sp, "subskills", None)
         if subs:
@@ -826,9 +870,10 @@ def sync_subskill_rows(sp, widgets: dict, make_row, indent: int = SUB_ROW_INDENT
         # exactly what the fold keyed on - so the id tail is the only thing
         # that tells the two rows apart.
         label = names.subskill_label(cid, sp.skill_id) or cid
-        if getattr(row, "_skill_label", None) != (cid, label):
-            row.set_skill(cid, label)
-            row._skill_label = (cid, label)
+        group = bool(getattr(child, "from_group_buff", False))
+        if getattr(row, "_skill_label", None) != (cid, label, group):
+            row.set_skill(cid, label, from_group_buff=group)
+            row._skill_label = (cid, label, group)
         share = child.share_pct(total_base if total_base is not None
                                 else max(child.damage, 1.0))
         row.update(child, share_pct=share, mode=mode)

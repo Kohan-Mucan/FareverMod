@@ -5,7 +5,7 @@ This `__init__` imports nothing, and that is load-bearing twice over.
 `_overlay_class` imports it by string the moment the window is first built, so
 opening the app idle costs no overlay imports at all. And because there is no
 static import edge anywhere below this line, PyInstaller's analysis cannot find
-these modules either - the list in `FareverPal.spec` is the only thing that
+these modules either - the list in `FareverMod.spec` is the only thing that
 carries them into a frozen build. Do not "tidy" re-exports in here: the hygiene
 suite checks that list against `_OVERLAY_SOURCES` in both directions, and the
 first version of that list was already stale by one module.

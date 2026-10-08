@@ -1,8 +1,10 @@
-# FareverPal Project Rules
+# FareverMod Project Rules
 
-Read-only, out-of-process companion for Farever: it reads the game's memory from a
-separate process and never writes to the game, automates input, or touches the
-network. Safety rules and design system: `docs/ARCHITECTURE.md`. Build setup:
+Companion for Farever: overlays/minimap/loot read the game's memory from a
+separate process and never write to the game, automate input, or touch the
+network. The sanctioned exception is the user-selected DPS bridge DLL (proxy /
+injector modes in Settings), which streams combat events out and writes no game
+state. Safety rules and design system: `docs/ARCHITECTURE.md`. Build setup:
 `CONTRIBUTING.md`.
 
 ## Start Here — orient before you read
@@ -41,12 +43,23 @@ Headless Qt quirk: `processEvents()` alone never delivers `deleteLater` (PySide
 `tests/qt_helpers.drain_deleted()` runs it off. Use it when a test asserts absence
 after a rebuild.
 
+**By eye, when the LOOK is the question.** A label dump can be right while the row
+is clipped, the font is wrong or nothing painted at all — those need a picture.
+A page-shooter lives in `build_tools/dev/` (dev-only, tracked, never packaged): it
+drives the real `ControlPanel` with no game attached and a throwaway moddata
+folder, saves a PNG per surface, and writes a self-contained `gallery.html` to
+scroll — every `NAV` page, the Items modes, the Enchants strip, the Settings tabs
+and each HUD. Its catalogue is read from `nav_registry.NAV` and
+`overlay_manager._OVERLAY_SOURCES`, so a new page is a new shot with no edit
+there, and its own test pins that each shot is grabbed while ITS surface is
+current. Output is thrown away with the day: `ai/workspace/shots/<stamp>/`.
+
 ## The test suite is part of the spec
 
 `tests/test_repo_hygiene.py` and `tests/test_ui_utils.py` enforce the contracts
 easy to break by accident. Two fail *silently* until a release:
 
-- `FareverPal.spec` `hiddenimports` vs `overlay_manager._OVERLAY_SOURCES` — the
+- `FareverMod.spec` `hiddenimports` vs `overlay_manager._OVERLAY_SOURCES` — the
   overlays load by runtime string, so that list is the only thing between a frozen
   build and five missing HUDs.
 - `test_the_agents_page_table_only_names_modules_that_exist` — a filename in the
@@ -154,6 +167,15 @@ build. The compiler knows the package only as the string `PACKAGE_DIRNAME` —
 imports the app tree, so do not "fix" a rule by importing it there. (The two
 files are named in their own headers and in the handoff; this section cites only
 tracked paths because the guard below requires it.)
+
+## Game vocabulary
+
+A word the game itself puts on something is shown with the game's word: the
+difficulty rungs are **Normal / Veteran / Heroic**, and `ui/dps_source_text.py`
+holds the one map (`DIFFICULTY_LABELS`) that decides the shown difficulty — never
+the app's old "Hard". Leave the stored tokens alone (`normal` / `hard` /
+`heroic`): they name archive files and record keys, so only the displayed word
+follows the game.
 
 ## Where things live
 

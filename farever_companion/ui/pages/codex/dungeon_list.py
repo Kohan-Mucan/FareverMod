@@ -47,10 +47,12 @@ class _WrapLabel(QtWidgets.QLabel):
 
 
 class DungeonListCell(QtWidgets.QFrame):
-    """One 2-column cell: gold-outlined boss icon + boss/dungeon names."""
+    """One 2-column cell: gold-outlined boss icon + boss/dungeon names.
 
-    # left-click tracks the dungeon; keep the app-wide copy menu off it
-    _no_copy_menu = True
+    No `_no_copy_menu`: left-click tracks the dungeon and right-click is
+    unclaimed here, so the app-wide (dev-only) copy menu belongs on this cell --
+    the flag used to sit here and hid the dev info for nothing.
+    """
     pick = QtCore.Signal(object)  # dungeon dict
 
     def __init__(self, ui, dungeon: dict, key, parent=None):
@@ -166,9 +168,15 @@ class DungeonListView(QtWidgets.QFrame):
 
         # Zone filter (All / Z1 / Z2 / Z3 keys on the Dungeons tab): only list
         # dungeons whose entrance (or rift spawn point) sits in the zone.
+        #
+        # `is_listable` drops the rows that name no dungeon at all - this list
+        # is the only surface that renders EVERY payload row, so it is the one
+        # that used to show the boss-less `Z1_POI_Dungeon_ManfishGeyser` as a
+        # bare `?  Lv 10`.
         zone = getattr(ui, "_dungeon_zone", "All") or "All"
         dungeons_to_show = [d for d in dungeons.load_dungeons()
-                            if zone == "All" or dungeons.zone_tag(d) == zone]
+                            if dungeons.is_listable(d)
+                            and (zone == "All" or dungeons.zone_tag(d) == zone)]
         for i, d in enumerate(dungeons_to_show):
             key = ui._dungeon_track_key(d)
             cell = DungeonListCell(ui, d, key)

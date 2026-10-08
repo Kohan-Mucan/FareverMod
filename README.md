@@ -1,9 +1,7 @@
-# Farever Pal
+# FareverMod
 
-A **read-only**, **out-of-process** live companion tool for Farever
-(Heaps / HashLink). It attaches to the running game and locates your character
-purely by **reading** memory — no writes, no code injection, no network — and
-shows:
+A live companion tool for Farever (Heaps / HashLink). It attaches to the running
+game and locates your character from **read-only** memory reads, and shows:
 
 - **Entity / loot overlay** — nearest enemies & chests with the real game icons,
   distance, and the closest source's full predicted drop table by rarity.
@@ -12,28 +10,35 @@ shows:
   HUD group meter auto-selected when the client provides it).
 - **Minimap** — top-down POI radar (chests, gatherables, enemies, obelisks),
   zoom, right-click to mark collectibles done.
+- **Rift predictor** — next hourly rift zone + live countdown card in the
+  sidebar, with chime reminders before it opens (Settings · Rift) and the
+  predicted rift pinned on the map. Pure clock math, so it works even with
+  the game closed.
 - **Dungeon Secret Orbs** — Automatic detection of InstanceOrbs and activity orbs
   within dungeons, even those not in the overworld static database.
-- **Offline loot predictor** — any loot table at any level.
+- **Gear, Items & Farm browser** — every item with its drop sources, farm rows, plus loadout and enchant planning.
 
-It is out-of-process and write-free, so it **cannot freeze or crash the game**
-(unlike an in-process DirectX-hook overlay).
+Overlays, loot prediction, and the minimap come from **read-only, out-of-process**
+memory reads. The DPS meter's combat feed depends on your DPS capture mode in
+Settings (default **Option 2: Hot Injector**): **Option 1** loads a drop-in proxy
+DLL from the game folder, **Option 2** hot-injects a hook DLL into the running
+game, and **Option 3** is a pure memory reader with no DLL at all. The DLL modes
+only stream combat events out to the meter — they cannot and do not change drops
+or any game state (Farever is online & server-authoritative).
 
-> Read-only by design. Farever is online & server-authoritative; this tool only
-> observes and predicts — it cannot and does not change drops or any game state.
-> It reads the game's memory from a separate process and **never writes to the
-> game or injects any code.**
+> Memory-reader mode never writes to the game. The DLL-based DPS modes run game-loaded
+> code to export combat events, so they carry the normal caveats of any game hook.
+> Pick Option 3 in Settings for a strictly DLL-free session.
 
 ## How it works (overview)
 
 The whole bet is that an external reader plus a separate Qt window can surface
-live info **without ever touching the game's process state** — so it can't crash,
-freeze, or alter the game.
+live info while leaving the game alone.
 
-- **Out-of-process, read-only.** A small Rust extension opens the game with a
-  read-only handle (no write / alloc / protect access) and exposes only reads and
-  a memory scan. There is no write path anywhere in the tree, and a test enforces
-  that.
+- **Out-of-process, read-only memory path.** A small Rust extension opens the game
+  with a read-only handle (no write / alloc / protect access) and exposes only
+  reads and a memory scan. No `WriteProcessMemory`-style write primitive exists
+  anywhere in the tree, and a test enforces that.
 - **Reflection, not hard-coded addresses.** The game runs on HashLink, which keeps
   class and field names in the runtime. The app reads those to identify objects by
   *name* (your character, enemies, chests, …) rather than relying on brittle fixed
@@ -52,7 +57,11 @@ freeze, or alter the game.
   authoritative caster; the client's server-synced HUD group meter is probed
   and takes over when live (whole group, not distance-bounded). No HP polling
   is used to make damage numbers - health is only read for the boss bar and
-  encounter state, and HP-diff is never used to fabricate a total.
+  encounter state, and HP-diff is never used to fabricate a total. The combat
+  events reach the meter via the capture mode you pick in Settings: **Option 1:
+  Drop-In Proxy** (a proxy DLL in the game folder), **Option 2: Hot Injector**
+  (hook DLL injected into the live game, the default), or **Option 3: Memory
+  Reader** (pure passive reads, no DLL).
 
 The tool *reads* derived, public-facing information for a fan wiki and personal
 use.
@@ -64,7 +73,7 @@ companion/
   native/            Rust memory reader (farever_native, PyO3)
   farever_companion/ the app (core / data / combat / geo / ui)
   tests/             headless logic tests
-  CREDITS.md         third-party attribution
+  CREDITS.md         attribution
 ```
 
 Data (CDB sheets, icons, names, chest positions) is stored in the `assets/`
@@ -109,7 +118,7 @@ build-mod.bat    :: one-shot pipeline: Rust ext -> compile data shims -> PyInsta
 
 `build-mod.bat` handles the whole pipeline in one go (Rust `farever_native`,
 `compiler.py` embedded shims, PyInstaller, `build_tools/verify_assets.py`) and
-names the output `dist\FareverPal-<version>-<commit>.exe` from the latest git
+names the output `dist\FareverMod-<version>-<commit>.exe` from the latest git
 commit. The resulting exe (~105 MB, self-contained) is published as a GitHub
 **release asset**, not committed to the repo.
 
@@ -125,20 +134,20 @@ commit. The resulting exe (~105 MB, self-contained) is published as a GitHub
 ## Status
 
 The core overlays (entity/loot, DPS, minimap) and the read-only player locate are
-**live-validated**. DPS totals are fed by real combat events (DamageDisplay
-reader, auto-probing the HUD group meter); the Top DPS overlay and Combat &
+**live-validated**. DPS totals are fed by real combat events (bridge DLL or
+DamageDisplay reader depending on capture mode, auto-probing the HUD group
+meter); the Top DPS overlay and Combat &
 DPS Analysis page show a status line for the active source and stay empty -
 never HP-derived - until real events flow. Some newer pieces (e.g. speedrun
 difficulty auto-detect) are still being refined.
 
-## Credits & third-party work
+## Credits
 
 See [`CREDITS.md`](CREDITS.md) for full attribution. In short:
 
 - **Farever** is made by its developers — this is an unofficial community fan
   tool. Please support the game on Steam. Taken down / stripped on request.
-- The minimap's world→pixel coordinate transform is derived from the community
-  web map **[farever-map](https://github.com/IceCaveBear/farever-map)** by
-  **IceCaveBear**. Credit and thanks to them.
+- Based on **[Popparoni/FareverPal](https://github.com/Popparoni/FareverPal)**
+  — credit for the original codebase and concept.
 - Built on the **Heaps** engine + **HashLink** VM (the game's stack); bundled
   fonts (Roboto Condensed) and Lucide icons under their own licenses.

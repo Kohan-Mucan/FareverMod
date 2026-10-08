@@ -117,6 +117,10 @@ class ItemFiltersMixin:
                 self._items_search_header.set_tag(
                     f"ITEMS {shown} / "
                     f"{getattr(self, '_items_total', 0) or self._items_list.count()}")
+        # the WEAPONS tab's tier is a READ, not a row count: re-tint the
+        # weapon tiles to the picked tier after every pass (see
+        # support.weapon_tier_projection)
+        self._items_apply_weapon_tier()
         self._items_update_chips()
         support.sync_quick_tabs(self)
         # matched-skill highlight on the open weapon's skill rows (live, as
@@ -177,7 +181,14 @@ class ItemFiltersMixin:
                     return False
             # the Rarity buttons: one tier at a time and strict — the lit
             # tier is the only one that shows (an empty set = no gate).
-            if not support.rarity_passes(item_id, rarities):
+            # WEAPONS filter on the rungs the game can actually hand a
+            # weapon out at, so a boss weapon drops out of an Epic pick
+            # while the heroic cache's pool weapons stay (see
+            # support.rarity_passes). The Weapons tab carries no Rarity
+            # row — every weapon shows at once at its own tier — so the
+            # gate is skipped there whatever the stored pick holds.
+            if cat != "Weapons" \
+                    and not support.rarity_passes(item_id, rarities):
                 return False
             if cat and cat != "@dungeon" \
                     and idata.category(it.get("type")) != cat:
@@ -492,9 +503,12 @@ class ItemFiltersMixin:
         # list's BACK · 24 header, and the counts track every live filter
         # (class, Only, the Rarity buttons, a picked rating) so the chip
         # number always matches how many rows clicking it would show.
+        # the WEAPONS tab's tier is a real gate (it filters on what the game
+        # can hand a weapon out at), so it belongs in the chip counts:
+        # 'Axes · N' counts the axes the lit tier actually leaves.
+        rarities = getattr(self, "_items_rarity_filter", ())
         counts = support.family_counts(
-            cls, getattr(self, "_items_only", False),
-            getattr(self, "_items_rarity_filter", ()),
+            cls, getattr(self, "_items_only", False), rarities,
             getattr(self, "_items_rating", ""),
             mode=getattr(self, "_items_mode", "gear"))
         for fam, chip in getattr(self, "_items_type_chips", {}).items():
@@ -531,7 +545,10 @@ class ItemFiltersMixin:
                                     clear_all=clear_all)
         toggle = getattr(self, "_items_rarity_toggle_box", None)
         if toggle is not None:
-            toggle.show()
+            # the Weapons tab carries no Rarity row — every weapon shows
+            # at once — so the toggle box stays hidden there like the
+            # Dungeons / Items tabs.
+            toggle.setVisible(cat != "Weapons")
         self._items_chips_box.show()
 
     def _items_toggle_type(self, typ: str, on: bool) -> None:
@@ -606,8 +623,10 @@ class ItemFiltersMixin:
         becomes the tab's own tier — Rare where the tab has one, else the
         best it does have. Called ahead of the row pass, so the snapped
         filter is the one the rows are classified with."""
-        tiers = support.RARITY_BUTTONS if not cat \
-            else support.category_rarities(cat)
+        # the DERIVED set at every tab, the empty category included: the
+        # Rarity row's own visibility comes from the same call, so a tier
+        # the row hides can never stay lit (Legendary on the all-tabs view).
+        tiers = support.category_rarities(cat)
         picked = self._items_rarity_pick()
         if not tiers or not picked or picked in tiers:
             return
@@ -621,14 +640,18 @@ class ItemFiltersMixin:
         """Show only the Rarity buttons the current tab can actually match:
         the data rolls no Epic weapon, so the Epic button is hidden on the
         Weapons tab instead of sitting there filtering nothing."""
-        if mode == "items":
+        if mode == "items" or cat == "Weapons":
             # the pool is not tier-driven — the Rarity row is dead weight
-            # here (the Dungeons tab hides it for the same reason)
+            # here (the Dungeons tab hides it for the same reason). The
+            # Weapons tab shows every weapon at once at its own tier, so
+            # its Rare/Epic/Legendary buttons are hidden the same way.
             for chip in getattr(self, "_items_rarity_toggle_chips", {}).values():
                 chip.setVisible(False)
             return
-        tiers = support.RARITY_BUTTONS if not cat \
-            else support.category_rarities(cat)
+        # the DERIVED set defines what the row shows, the empty category
+        # included — the fallback to every button there would put a
+        # Legendary button on the all-tabs view, where it filters nothing.
+        tiers = support.category_rarities(cat, mode)
         for rar, chip in getattr(self, "_items_rarity_toggle_chips", {}).items():
             chip.setVisible(rar in tiers)
 
@@ -655,6 +678,10 @@ class ItemFiltersMixin:
         counts = support.rarity_counts(
             getattr(self, "_items_class", ""),
             bool(getattr(self, "_items_only", False)), rating, cat, ids)
+        # Every tier's number is its own. WEAPONS count under every rung the
+        # game can hand a weapon out at (see support.rarity_counts), so
+        # 'Epic · 4' is the four weapons the heroic cache can grant at Epic —
+        # not the whole set re-read at a tier none of them is.
         for rar, chip in getattr(self, "_items_rarity_toggle_chips", {}).items():
             chip.setText(f"{rar} · {counts.get(rar, 0)}")
 

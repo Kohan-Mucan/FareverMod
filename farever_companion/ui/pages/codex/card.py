@@ -11,7 +11,9 @@ from ....data import units as udata
 
 class CodexUnitCard(QtWidgets.QFrame):
     """A visual card for a mob or pet in the bestiary."""
-    # right-click toggles the card; keep the app-wide copy menu off it
+    # Right-click toggles the card, so the app-wide copy menu skips it. It is
+    # not gone, though: Ctrl+right-click is copy_menu's dev override, and the
+    # guard in mousePressEvent below leaves that gesture to the menu.
     _no_copy_menu = True
     toggled = QtCore.Signal(bool)
     selected = QtCore.Signal(str)
@@ -103,6 +105,12 @@ class CodexUnitCard(QtWidgets.QFrame):
         # icon area of a compact card responds.
         if self.compact and self.name_container.geometry().contains(event.position().toPoint()):
             event.ignore()
+            return
+        if (event.button() == QtCore.Qt.RightButton
+                and event.modifiers() & QtCore.Qt.ControlModifier):
+            # Ctrl+right-click belongs to the dev copy menu (copy_menu's
+            # override), so return without toggling: asking "which file draws
+            # this card?" must not also hide the mob.
             return
         if event.button() == QtCore.Qt.RightButton:
             if not self.locked:

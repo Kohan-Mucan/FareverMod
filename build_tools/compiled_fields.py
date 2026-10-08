@@ -64,7 +64,7 @@ SOURCE_FILES = {
 # here means "a payload-wide absence in this one field is expected".
 EXCEPTIONS: dict[tuple[str, str, str], str] = {
     # KNOWN DEBT, not a harmless one: the read is source-sheet-first on
-    # purpose, but FareverPal.spec bundles assets/data/*.json ONLY in
+    # purpose, but FareverMod.spec bundles assets/data/*.json ONLY in
     # raw_data-less fallback mode — so in the normal frozen build
     # _item_effect_durations has no source sheet AND the compiled rows have no
     # `props`, i.e. consumable status durations (the Feast's 1H vs the 15M
@@ -223,16 +223,16 @@ def _exercise() -> None:
     happen with tracking installed. Qt-free on purpose: this runs in the build
     before PyInstaller, and `core/`+`data/` stay importable without PySide6."""
     from farever_companion.data import (cdb, classes, codex, dungeons,
-                                        encounters, names, skills as S,
-                                        soulwell, units)
+                                        encounters, names, reputation,
+                                        skills as S, soulwell, units)
     from farever_companion.data.items import catalog, craft, labels, sources, stats
 
-    _clear_caches(cdb, classes, codex, dungeons, names, units, S, soulwell,
-                  catalog, craft, labels, sources, stats)
+    _clear_caches(cdb, classes, codex, dungeons, names, reputation, S,
+                  soulwell, units, catalog, craft, labels, sources, stats)
 
     for sheet in ("item", "unit", "skill", "rarity", "zone", "unitType",
                   "constant", "counter", "lootTable", "items", "units",
-                  "skills", "atlas"):
+                  "skills", "faction", "atlas"):
         for fn in (cdb.lines, cdb.by_id):
             try:
                 fn(sheet)
@@ -265,6 +265,23 @@ def _exercise() -> None:
             counter = soulwell.luck_counter_for_status(status) or ""
             soulwell.luck_chance(counter, 3)
             soulwell.luck_scope(counter)
+        except Exception:
+            pass
+
+    # Reputation ladder (the pared ach rows, the loot entry conditions and
+    # the standing-skill scripts): every reader the Codex Rep list ships, so
+    # a trimmed `objectives` on the ach rows, a dropped `conditions` on the
+    # loot entries or a missing verbatim skill row fails the build like any
+    # other trim.
+    try:
+        reputation.xp_per_rank()
+        reputation.xp_gains()
+    except Exception:
+        pass
+    for faction in (reputation.factions() or []):
+        try:
+            reputation.cumulative_xp(max(faction.levels or (0,)))
+            reputation.rewards(faction.faction_id)
         except Exception:
             pass
 

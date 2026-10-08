@@ -316,7 +316,7 @@ was split out only to keep the file under the ui line budget."""
                         dll_lbl.setStyleSheet(f"font-size: 13px; color: {theme.GOOD}; font-weight: 600;")
                     elif binfo.get("proxy_in_game_dir"):
                         if tp_dinput or tp_version:
-                            dll_lbl.setText(f"DLL: ● {binfo.get('dll_name')} (FareverPal) + 3rd-party {tp_summary}")
+                            dll_lbl.setText(f"DLL: ● {binfo.get('dll_name')} (FareverMod) + 3rd-party {tp_summary}")
                             dll_lbl.setStyleSheet("font-size: 13px; color: #38BDF8; font-weight: 700;")
                         else:
                             # Status already reports READY with the same DLL;
@@ -457,7 +457,7 @@ was split out only to keep the file under the ui line budget."""
                     else:
                         conflict_line.setText(
                             f"ℹ 3rd-party {tp_summary} found in the game folder — "
-                            f"FareverPal is safely on {pref_dll}."
+                            f"FareverMod is safely on {pref_dll}."
                         )
                         conflict_line.setStyleSheet(
                             "font-size: 12px; font-weight: 700; color: #38BDF8;")
@@ -478,7 +478,7 @@ was split out only to keep the file under the ui line budget."""
             self._logged_conflict_disk = False
 
         # Keep the Option 1 select button honest: it shows "✓ ACTIVE MODE"
-        # only when a FareverPal proxy DLL is actually in the game folder (or
+        # only when a FareverMod proxy DLL is actually in the game folder (or
         # already loaded by the running game), otherwise "✗ No DLL Installed".
         # Re-style the cards only when that readiness (or Option 2's
         # hook-loaded state, which drives the Uninject button) changed, so the
@@ -728,7 +728,7 @@ was split out only to keep the file under the ui line budget."""
                 self.log(f"Combat Bridge: {err}")
 
     def _remove_proxy_dll(self) -> None:
-        """Remove FareverPal proxy DLL from the Farever game folder (preserves 3rd-party mods)."""
+        """Remove FareverMod proxy DLL from the Farever game folder (preserves 3rd-party mods)."""
         import os
         from pathlib import Path
         from ....core.proc import is_farever_proxy, find_pid
@@ -789,9 +789,9 @@ was split out only to keep the file under the ui line budget."""
 
         if not farever_files_to_remove:
             if third_party_files:
-                msg = f"ℹ No FareverPal proxy found. Preserved 3rd-party mod: {', '.join(third_party_files)}."
+                msg = f"ℹ No FareverMod proxy found. Preserved 3rd-party mod: {', '.join(third_party_files)}."
             else:
-                msg = "ℹ No FareverPal proxy DLL found in the game folder (already clean)."
+                msg = "ℹ No FareverMod proxy DLL found in the game folder (already clean)."
             if hasattr(self, "_dps_proxy_feedback") and self._dps_proxy_feedback:
                 self._dps_proxy_feedback.setText(msg)
                 self._dps_proxy_feedback.setStyleSheet("color: #38BDF8; font-size: 12px;")
@@ -863,7 +863,7 @@ was split out only to keep the file under the ui line budget."""
             return
 
         if removed_any:
-            msg = "✓ Removed FareverPal proxy DLL from game folder! Your game directory is clean."
+            msg = "✓ Removed FareverMod proxy DLL from game folder! Your game directory is clean."
             if third_party_files:
                 msg += f" (Preserved 3rd-party {', '.join(third_party_files)})"
             if hasattr(self, "_dps_proxy_feedback") and self._dps_proxy_feedback:
@@ -876,7 +876,7 @@ was split out only to keep the file under the ui line budget."""
 
     def _test_uninject_now(self) -> None:
         # Immediately switch DPS capture mode to Option 3 (Memory Reader)
-        # This persists to settings.json so next time FareverPal/game opens,
+        # This persists to settings.json so next time FareverMod/game opens,
         # it does NOT auto-inject farever_dps.dll!
         self._set_dps_mode_key("memory")
 

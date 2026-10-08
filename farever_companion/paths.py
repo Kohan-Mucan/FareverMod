@@ -133,7 +133,7 @@ def gatherable_locs_path() -> Path:
 
 @lru_cache(maxsize=1)
 def project_root() -> Path:
-    """This project's own root (FareverPal/), for caches and config defaults."""
+    """This project's own root (FareverMod/), for caches and config defaults."""
     for parent in PACKAGE_DIR.parents:
         if (parent / "run.py").exists() and (parent / PACKAGE_DIR.name).exists():
             return parent

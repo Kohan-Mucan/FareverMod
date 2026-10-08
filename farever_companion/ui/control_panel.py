@@ -105,7 +105,7 @@ class ControlPanel(CombatPageMixin, PBPageMixin, PartyPageMixin,
         self._nav_history = PageHistory(self._select_nav)
         QtWidgets.QApplication.instance().installEventFilter(self)
 
-        self.setWindowTitle("Farever Pal")
+        self.setWindowTitle("FareverMod")
         self.setMinimumSize(1000, 640)
         # 1400, not the old 1180: the nav sidebar takes 212px, and the Combat
         # page's own minimum is ~1130px, so anything under about 1340 opens
@@ -162,20 +162,16 @@ class ControlPanel(CombatPageMixin, PBPageMixin, PartyPageMixin,
 
         QtCore.QTimer.singleShot(3000, _trim_working_set)
 
-        # Self-update check
-        updater.cleanup_old()
+        # Update check: notify, then link to the GitHub release page.
         self._update_info = None
         self._update_check_worker: CallWorker | None = None
-        self._update_dl_worker: CallWorker | None = None
-        self._updating = False
-        # The check reaches the release oracle and the install path needs a
-        # frozen exe, so `check_updates` decides by MODE: "Always" polls even
-        # here in a source run, "Packaged only" (the default) only where an
-        # update could be installed, "Never" never - the opt-out a packaged
-        # build could not express while this was a boolean. Settings -> Dev
-        # owns the picker, and `_on_update_found` raises the sidebar pill. An
-        # unset or unreadable value reads as the default, which is what keeps a
-        # source run (and the test suite) off the network.
+        # `check_updates` decides by MODE: "Always" polls even here in a source
+        # run, "Packaged only" (the default) only in a packaged build, "Never"
+        # never - the opt-out a packaged build could not express while this was
+        # a boolean. Settings -> Dev owns the picker, and `_on_update_found`
+        # raises the sidebar pill. An unset or unreadable value reads as the
+        # default, which is what keeps a source run (and the test suite) off the
+        # network.
         if updater.should_check(getattr(self.s, "check_updates", None),
                                 updater.is_frozen()):
             self._start_update_check()
@@ -264,9 +260,9 @@ class ControlPanel(CombatPageMixin, PBPageMixin, PartyPageMixin,
         lay.setSpacing(4)
         self._sidebar_lay = lay
 
-        brand = QtWidgets.QLabel("FAREVER PAL")
+        brand = QtWidgets.QLabel("FAREVERMOD")
         brand.setObjectName("Brand")
-        ver = QtWidgets.QLabel(f'<a href="https://kohan-mucan.github.io/FareverPal/" style="color:#bdc8d1; text-decoration:none;">Git Version v{__version__}</a>')
+        ver = QtWidgets.QLabel(f'<a href="https://kohan-mucan.github.io/FareverMod/" style="color:#bdc8d1; text-decoration:none;">Git Version v{__version__}</a>')
         ver.setOpenExternalLinks(True)
         ver.setObjectName("Mono")
         lay.addWidget(brand)

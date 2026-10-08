@@ -3,12 +3,18 @@
 One batched read_many pulls a header block for every unit at once. An enemy is
 anything whose type descends from ent.Foe (HL super-chain) and is not hero-owned.
 
-Verified scene path (Farever EA, 2026-05-24):
+The scene path, by CONSTANT NAME and never by value:
 
-    pbase (ent.Hero) +0x58  -> st.GameLayer
-    st.GameLayer     +0x128 -> ArrayObj  (units: ent.Hero + ent.Foe subclasses)
-    st.GameLayer     +0x120 -> ArrayObj  (elements: interactibles, no units)
-    per unit: +0x60 owner, +0x98/A0/A8 xyz (f64), +0x250 unit-id, +0x3D0 attributes
+    ent.Hero            + OFF_GAMELAYER      -> st.GameLayer
+    st.GameLayer        + OFF_UNITS_ARR      -> ArrayObj (units: ent.Hero + ent.Foe subclasses)
+    st.GameLayer        + OFF_ELEMS_ARR      -> ArrayObj (elements: interactibles, no units)
+    per unit: + OFF_OWNER, + OFF_POS (f64[3]), + OFF_UNITID, + OFF_UATTR
+
+The values live in `constants.py` and only there: a number written into this
+docstring is a number that cannot be calibrated when a patch moves it, and the
+offset calibrator cannot see prose. This header used to spell them out, and by
+the time a patch moved GameLayer from 0x58 to 0x70 it was describing a layout
+the code no longer used - a reader who trusted it would debug the wrong address.
 """
 from __future__ import annotations
 
@@ -20,12 +26,14 @@ from dataclasses import dataclass
 
 from . import attributes
 from .hl import Hl, is_ptr
+from .inspect import _array_entries, _unwrap_proxy_array
 from .proc import Proc, ProcError
 from ..data.units import canonical_unit_id
 from ..constants import (   # offsets live in one place; re-exported for callers
     OFF_GAMELAYER, OFF_UNITS_ARR, OFF_ELEMS_ARR, OFF_POS,
     OFF_UNITID, OFF_ELEMID, OFF_ELEMSTATE, UNIT_BLOCK,
     OFF_BOX_VALUE, CONFIG_SCAN_BYTES,
+    OFF_WORLDEVENTS_CURRENT, OFF_WORLDEVENTS_NAME_SLOTS,
     OFF_MAIN_ACTIVITY, OFF_UATTR, OFF_LEVEL_UNIT, OFF_HEALTH,
     OFF_HERO_OWNERPLAYER, OFF_FOE_OWNER,    OFF_RIFT_BOOL, OFF_WORLD_MAPID, OFF_WORLDEVENTS_ARR, OFF_LAST_HEROIC,
     OFF_CONFIG_CANDIDATES, OFF_CONFIG_MAPID_CANDIDATES, OFF_CONFIG_DIFF_CANDIDATES,
@@ -340,14 +348,15 @@ class Scene:
 
     # GameLayer.config resolution (2026-09-19). Both the slot and the fields
     # inside it are looked up BY NAME first; the OFF_CONFIG_* constants are the
-    # calibrated fallback. The 2026-09-19 build moved the slot (the constant
-    # 0xc8 landed on an unrelated object, so `_cfg_off` never validated and
-    # map_id/difficulty both went dead outside the overworld).
+    # calibrated fallback. The 2026-09-19 build moved the slot - the then-current
+    # OFF_CONFIG value landed on an unrelated object, so `_cfg_off` never
+    # validated and map_id/difficulty both went dead outside the overworld. The
+    # candidates list in constants.py still carries the dead entries on purpose.
     CONFIG_FIELD = "config"
     CONFIG_MAPID_FIELDS = ("mapId", "mapID", "activityId", "activityID", "map", "zoneId", "level")
     CONFIG_DIFF_FIELDS = ("difficulty", "difficultyLevel", "diff", "hard")
     # Last-resort window hunted for a mapId-shaped String inside a config whose
-    # own layout can't be reflected (the old probe only looked at 0x40 bytes).
+    # own layout can't be reflected. A scan size, not a game offset.
     CONFIG_MAPID_SCAN_BYTES = 0x200
 
     def __init__(self, proc: Proc, hl: Hl):
@@ -596,8 +605,9 @@ class Scene:
         return []
 
     def difficulty(self, pbase: int | None) -> int | None:
-        """Instance difficulty from GameLayer.config: 0=Normal, 1=Hard, None
-        outside an instance. Independent of enemy levels."""
+        """Instance difficulty from GameLayer.config: 0=Normal, 1=Veteran (the
+        app's token: "hard"), None outside an instance. Independent of enemy
+        levels."""
         gl = self.gamelayer(pbase)
         if gl is None:
             return None
@@ -659,8 +669,8 @@ class Scene:
           * legacy (st.Config): boxed Null<Int> at reflected / 0x08, where
             box+0x08 -> i32.  A null box means outside an instance.
             LIVE 2026-09-20 (dmode probe, all three modes): the BOXED path is
-            the one that works, with 0=Normal, 1=Hard, 2=Heroic (box=2 read
-            on a heroic run; box=0/1 on normal/hard).
+            the one that works, with 0=Normal, 1=Veteran, 2=Heroic (the game's
+            own names; box=2 read on a Heroic run, box=0/1 on Normal/Veteran).
         Plain I32 is tried first at the reflected offset; legacy boxed is the
         fallback.  A raw I32 fallback outside reflection is NOT used — an
         unset slot reads as 0 and would fake "Normal" (see test_null_box)."""
@@ -790,43 +800,28 @@ class Scene:
             we = self.hl.ptr(gl + OFF_WORLDEVENTS_ARR)
             if not is_ptr(we):
                 return None
-            
-            # st.event.WorldEvents.currentEvents (+0x0098)
-            ce_proxy = self.hl.ptr(we + 0x0098)
+
+            ce_proxy = self.hl.ptr(we + OFF_WORLDEVENTS_CURRENT)
             if not is_ptr(ce_proxy):
                 return None
-            
-            # hxbit.ArrayProxyData.array (+0x0028) -> ArrayDyn
-            arr_dyn = self.hl.ptr(ce_proxy + 0x0028)
-            if not is_ptr(arr_dyn):
+
+            # The proxy -> array unwrap is inspect's, not a second copy of it:
+            # this walk used to hand-unwrap the chain, which meant it needed its
+            # own idea of the ArrayDyn hop and silently returned nothing if that
+            # hop moved. One implementation means one answer.
+            arr = _unwrap_proxy_array(self.proc, self.hl, ce_proxy, 64)
+            if not arr:
                 return None
-            
-            # ArrayDyn.array (+0x0008) -> ArrayObj
-            arr_obj = self.hl.ptr(arr_dyn + 0x0008)
-            if not is_ptr(arr_obj):
-                return None
-            
-            # ArrayObj length (+0x08) & array pointer (+0x10) -> NativeArray
-            length = self.proc.read_i32(arr_obj + 0x08)
-            if length <= 0 or length > 100:
-                return None
-            
-            na_ptr = self.hl.ptr(arr_obj + 0x10) or self.hl.ptr(arr_obj + 0x0C)
-            if not is_ptr(na_ptr):
-                return None
-            
-            # NativeArray elements start at +0x18
-            for i in range(min(length, 10)):
-                evt_ptr = self.hl.ptr(na_ptr + 0x18 + (i * 8))
-                if is_ptr(evt_ptr):
-                    cls_name = self.hl.class_of(evt_ptr) or ""
-                    if "Rift" in cls_name or "WorldEvent" in cls_name:
-                        for str_off in (0x0100, 0x00F4, 0x00EC, 0x00B0):
-                            active_rift_ptr = self.hl.ptr(evt_ptr + str_off)
-                            if is_ptr(active_rift_ptr):
-                                s = self.hl.hl_string(active_rift_ptr)
-                                if s and ("POI" in s or "Rift" in s or "Z1" in s or "Z2" in s):
-                                    return s
+
+            for evt_ptr in _array_entries(self.hl, arr, cap=10):
+                cls_name = self.hl.class_of(evt_ptr) or ""
+                if "Rift" in cls_name or "WorldEvent" in cls_name:
+                    for str_off in OFF_WORLDEVENTS_NAME_SLOTS:
+                        active_rift_ptr = self.hl.ptr(evt_ptr + str_off)
+                        if is_ptr(active_rift_ptr):
+                            s = self.hl.hl_string(active_rift_ptr)
+                            if s and ("POI" in s or "Rift" in s or "Z1" in s or "Z2" in s):
+                                return s
         except Exception:
             pass
         return None
@@ -1003,7 +998,7 @@ class Scene:
     def _heroic_flag(self, gl: int) -> bool:
         """st.GameLayer's heroic bool (heroic dungeons are a FLAG on the layer,
         NOT difficulty=2 in InstanceLobby.difficulty — the config read stays
-        0=Normal/1=Hard even on a heroic run). Reflected field first, then
+        0=Normal / 1=Veteran even on a Heroic run). Reflected field first, then
         OFF_LAST_HEROIC. Same strict 1-byte pattern as _rift_flag."""
         try:
             tp = self.hl.ptr(gl)
@@ -1244,8 +1239,11 @@ class Scene:
             unit_id = self._clean_id(unit_id)
             
             # Determine the owner:
-            # o2 = OFF_HERO_OWNERPLAYER (0x498): Hero's ownerPlayer -> st.Player (highest authority)
-            # o1 = OFF_FOE_OWNER (0x78):  Foe/pet's player field -> ent.Hero owner (confirmed via dump_elements)
+            # o2 = OFF_HERO_OWNERPLAYER: Hero's ownerPlayer -> st.Player (highest authority)
+            # o1 = OFF_FOE_OWNER:  Foe/pet's player field -> ent.Hero owner (confirmed via dump_elements)
+            # The values are in constants.py and are NOT 0x498/0x78 as an old
+            # comment here claimed - the live ownerPlayer is 0x10. A reader who
+            # believed that comment would chase the wrong slot for an hour.
             o1 = struct.unpack_from("<Q", blk, OFF_FOE_OWNER)[0]       # Foe/pet -> Hero owner
             o2 = struct.unpack_from("<Q", blk, OFF_HERO_OWNERPLAYER)[0] if len(blk) > OFF_HERO_OWNERPLAYER else 0  # Hero -> st.Player
             
@@ -1448,8 +1446,8 @@ class Scene:
 
         ent.interactible.LootDrop extends ent.Interactible with its own fields:
         item (st.Item*) whose kind is the item id ('MoteOfChaos'), count (i32),
-        players (ArrayObj). All shifted +0x20 in the 2026-09-11 patch (2026-08-23
-        constants). Those slots sit on a DIFFERENT class from ent.Element's, so
+        players (ArrayObj). Those slots sit on a DIFFERENT class from
+        ent.Element's, so
         they drift independently — item and count reflect per type first
         (LOOT_*_FIELDS / ITEM_KIND_FIELDS) with the constants as fallback, and a
         failed read degrades to no data (count -> 1) instead of a stale-slot lie.
@@ -1496,7 +1494,8 @@ class Scene:
           - st.skill.object.WorldConsumable (dedicated consumable element)
           - st.skill.SkillObject (same layout as combat casts, so those only
             count when the resolved skill name smells like food)
-        Both reuse the ent.Element.kind slot (@0x290) as an st.skill.Skill*;
+        Both reuse the ent.Element.kind slot (OFF_CONSUMABLE_SKILL) as an
+        st.skill.Skill*;
         the per-food name is resolved via Skill.originItem.kind (the generic
         skill kind alone reads identically for every food)."""
         out: list[FoodStation] = []

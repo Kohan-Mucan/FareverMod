@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FareverPal Combat Bridge Live Monitor
+FareverMod Combat Bridge Live Monitor
 
 Two ways in, because the DLL's datagrams have exactly one receiver:
 
@@ -160,7 +160,7 @@ class Printer:
 
 def banner(title):
     print("=" * 68)
-    print(f" FareverPal Combat Bridge Live Monitor - {title}")
+    print(f" FareverMod Combat Bridge Live Monitor - {title}")
     print("=" * 68)
 
 
@@ -219,7 +219,7 @@ def run_relay(printer, sock):
         nxt = _connect_relay(timeout=1.0)
         if nxt is None:
             print(f"[{format_ts()}] [WAITING] No app relay on "
-                  f"{RELAY_HOST}:{RELAY_PORT} - is FareverPal running? Retrying...")
+                  f"{RELAY_HOST}:{RELAY_PORT} - is FareverMod running? Retrying...")
             while nxt is None:
                 time.sleep(2.0)
                 nxt = _connect_relay(timeout=1.0)
@@ -244,7 +244,7 @@ def _relay_advice(holders):
         "  The app IS running and owns 49152, but its debug relay is not",
         "  answering on " + f"{RELAY_HOST}:{RELAY_PORT}.",
         "  That means this app process predates the relay, or it was launched",
-        "  with the relay switched off. Restart FareverPal, then run this",
+        "  with the relay switched off. Restart FareverMod, then run this",
         "  monitor again - it will attach instead of competing for the port.",
         "",
         "  Running from source? The relay is automatic for source-tree runs.",
@@ -281,7 +281,7 @@ def run_direct(printer):
                 print("  only one process can receive these datagrams.")
         else:
             print("  No process could be identified on the port. Something else may")
-            print("  still be holding it - close other FareverPal tools and retry.")
+            print("  still be holding it - close other FareverMod tools and retry.")
         _pause()
         return False
 
@@ -332,7 +332,7 @@ def main():
         if "--relay" in args:
             print(f"[{format_ts()}] [ERROR] --relay was requested but no app "
                   f"relay answered on {RELAY_HOST}:{RELAY_PORT}.")
-            print("  Start FareverPal first, or drop --relay to take 49152 directly.")
+            print("  Start FareverMod first, or drop --relay to take 49152 directly.")
             _pause()
             return 1
 

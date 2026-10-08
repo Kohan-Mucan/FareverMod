@@ -813,7 +813,7 @@ def test_category_tabs_switch_one_full_width_group():
     assert not p._ench_scrolls_card.isVisible()
     assert list(tabs._btns) == ["Gems", "Augments", "Conversions",
                                 "Elixirs", "Food", "Scrolls", "Infusions",
-                                "Upgrades"]
+                                "Upgrades", "Soulwell"]
     # the card titles carry what the rows share — the scrolls' 30M
     # duration, the job names (only Alchemists craft elixirs, only
     # Cooks the dishes) — and no count tags (every row is visible). The
@@ -1852,6 +1852,54 @@ def test_infusion_row_title_line_carries_the_name_and_the_skill():
     p._items_show_id = seen.append
     pills[1].click()
     assert seen == ["InfusionPattern_Manfish_Tank"]
+
+
+def test_infusion_rows_lead_with_their_pattern_icon():
+    """Every Infusions row opens with its pattern's OWN item icon, at the head
+    of the title line — the same IconTile the scrolls / gems / conversions rows
+    lead with, so the Infusions tab reads like the rest of the page.
+
+    The icon is a plain LABEL, never a second link: the name beside it stays
+    the row's one click into the item card (see _ench_infusion_pill), and no
+    ancestor turns the pointer into a hand. It is also sized to the title line
+    (_INFUSION_ICON) rather than to the 26px table tiles, which is what keeps a
+    faction's three rows clear of the fold (_TIER_PX).
+    """
+    from farever_companion.data import icons
+    from farever_companion.ui.pages.items import enchants as inf
+    p = _page()
+    p._items_set_mode("Enchants")
+    p._ench_tabs._btns["Infusions"].click()
+    chips = _infusion_chips(p)
+    app = QtWidgets.QApplication.instance()
+    for _ in range(4):
+        app.processEvents()
+    # the icon rides the title line of every card on every faction
+    for fac in chips:
+        chips[fac].click()
+        for _ in range(4):
+            app.processEvents()
+        cards = p._ench_infusion_rows.cards()
+        assert cards, fac
+        for card in cards:
+            title = card.layout().itemAt(0).widget()
+            tiles = title.findChildren(C.IconTile)
+            assert len(tiles) == 1, (fac, card.property("item_id"),
+                                     [t.width() for t in tiles])
+            tile = tiles[0]
+            assert (tile.width(), tile.height()) == (inf._INFUSION_ICON,
+                                                     inf._INFUSION_ICON)
+            # the icon is THE PATTERN's art, not a lookalike
+            want = icons.tile("item", card.property("item_id"),
+                              inf._INFUSION_ICON, theme.ACCENT)
+            got = tile.pixmap()
+            assert got is not None and not got.isNull(), card.property("item_id")
+            assert got.toImage() == want.toImage(), card.property("item_id")
+            # ...and it is not the link: the line's one button is still the name
+            btns = title.findChildren(QtWidgets.QPushButton)
+            assert len(btns) == 1, [b.text() for b in btns]
+            assert tile.x() < btns[0].x(), "the icon leads the name"
+            assert tile.cursor().shape() != QtCore.Qt.PointingHandCursor
 
 
 def test_infusion_row_cards_are_leveled():

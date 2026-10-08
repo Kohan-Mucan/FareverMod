@@ -453,9 +453,12 @@ class CodexMapUiMixin:
         itype = (info.get("type") or "").lower()
         is_mount = "mount" in itype or unit_id.startswith("Mount_")
         is_glider = "glider" in itype or unit_id.startswith("Glider_")
-        # the card grid is the target view — never the dungeon list
+        # the card grid is the target view — never the dungeon list, and
+        # never the Other tab's NPC list (which renders no cards at all)
         if hasattr(self, "_dungeon_list_mode"):
             self._dungeon_list_mode = False
+        if hasattr(self, "_leave_npc_view"):
+            self._leave_npc_view()
         if rid == "Pets" or is_mount or is_glider:
             # mounts/gliders (and pets) live on the Collection tab
             self._codex_tabs.setCurrentText("Collection")
@@ -624,12 +627,27 @@ class CodexMapUiMixin:
             return None
         x, y = float(coords[0]["x"]), float(coords[0]["y"])
         z, pid = 0.0, d.get("id") or ""
-        for p in geo_pois.load_pois():
-            if p.sub_kind not in ("dungeon", "rift"):
-                continue
-            if abs(p.x - x) < 1.5 and abs(p.y - y) < 1.5:
-                z, pid = float(p.z), p.id or pid
-                break
+        if is_rift:
+            # Both rifts share the single "Rifts" entrance zone, so the codex
+            # resolver hands back BOTH gates and coords[0] is always the Z2
+            # Krisomal one — every rift row would track and pin that gate. Each
+            # rift spawns in its own zone, so take the gate that sits in THIS
+            # rift's zone (the rule `_dungeon_entrance_xy` uses for the map pins).
+            from ....data import dungeons
+            zone = dungeons.zone_tag(d)
+            for p in geo_pois.load_pois():
+                if p.sub_kind != "rift":
+                    continue
+                if dungeons.zone_tag_from_zone_id(p.zone or "") == zone:
+                    return "rift", (f"{float(p.x):.1f},{float(p.y):.1f},"
+                                    f"{float(p.z):.1f}|{dname}|{p.id or pid}")
+        else:
+            for p in geo_pois.load_pois():
+                if p.sub_kind not in ("dungeon", "rift"):
+                    continue
+                if abs(p.x - x) < 1.5 and abs(p.y - y) < 1.5:
+                    z, pid = float(p.z), p.id or pid
+                    break
         kind = "rift" if is_rift else "dungeon"
         return kind, f"{x:.1f},{y:.1f},{z:.1f}|{dname}|{pid}"
 

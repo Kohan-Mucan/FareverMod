@@ -96,7 +96,56 @@ class StretchFlow(FlowLayout):
     across the full width (like a grid row). When the viewport is too narrow
     to keep everything in one row the layout wraps to fewer per row instead of
     overflowing horizontally. A lone leftover item keeps its natural width.
+
+    With ``set_min_share(px)`` the flow becomes a fixed COLUMN GRID instead:
+    the column count is decided once for the whole flow (the most columns that
+    can hold ``px`` per card, never more than the cards present), and every row
+    - including a short last one - gives each card that same column width. Its
+    cards therefore line up as real columns at any width, where the default
+    per-row packing lets a row of one wide card sit over a row of two narrow
+    ones and the columns drift apart.
+
+    With ``set_balance_columns(True)`` on that grid, cards are packed into
+    COLUMNS balanced by height instead of into top-aligned rows — see
+    `set_balance_columns` for why a row grid cannot help when the cards' heights
+    are far apart.
     """
+
+    def __init__(self, parent=None, margin=0, spacing=4):
+        super().__init__(parent, margin, spacing)
+        self._min_share = 0
+        self._balance = False
+
+    def set_min_share(self, px: int) -> None:
+        """Turn on the fixed-column grid: each card gets at least this width
+        before the flow gives up a column (0 restores the default packing)."""
+        self._min_share = max(0, int(px))
+        self.invalidate()
+
+    def set_balance_columns(self, on: bool = True) -> None:
+        """Pack the fixed-column grid into balanced COLUMNS, not rows.
+
+        The row grid top-aligns every card at its OWN height inside a row as tall
+        as its tallest member, so the shorter card in a row leaves its leftover
+        as a hole under itself. Reordering the cards cannot fix that when the
+        heights are spread out: the Settings DPS bottom grid measured 449 / 292 /
+        191 / 189 / 111 px, and the closest any row pairing gets is 160px of hole
+        (the 449px card has no partner within reach), so the best re-pairing is
+        within a few px of the worst.
+
+        Balanced columns instead place each card in whichever column is currently
+        shortest, so a tall card is followed by short cards STACKED UNDER IT and
+        the hole is filled rather than opened. Every card keeps its own height
+        and the single column width, so the columns still line up; what changes
+        is that the flow stops reserving a band per row. Measured on that same
+        grid at 1600px: 149px of holes in three rows became 45px of difference
+        between two columns, and the grid lost ~85px of height.
+
+        Ties (and near-ties, within 1px) keep the LEFT column, so the first two
+        cards stay side by side and the packing is stable across passes.
+        """
+        self._balance = bool(on)
+        self.invalidate()
 
     def _do_layout(self, rect: QtCore.QRect, test_only: bool) -> int:
         m = self.contentsMargins()
@@ -110,29 +159,48 @@ class StretchFlow(FlowLayout):
         def _share(n: int) -> float:
             return (avail - space * (n - 1)) / n if n else 0.0
 
-        # Group into rows: a candidate row must fit every member at least at
-        # its own minimum width when the row's width is shared equally.
-        rows: list[list] = []
-        row: list = []
-        row_max_min = 0
-        for it in items:
-            w = it.widget()
-            mn = max(it.minimumSize().width(), w.minimumSizeHint().width())
-            n = len(row) + 1
-            if row and _share(n) < row_max_min - 1:
+        fixed = self._min_share > 0
+        col_w = 0
+        if fixed:
+            cols = 1
+            for n in range(2, len(items) + 1):
+                if _share(n) >= self._min_share:
+                    cols = n
+                else:
+                    break
+            col_w = int(_share(cols))
+            if self._balance and cols >= 2:
+                return self._layout_balanced(rect, items, cols, col_w, m, space,
+                                             test_only)
+            rows: list[list] = [items[i:i + cols]
+                                for i in range(0, len(items), cols)]
+        else:
+            # Group into rows: a candidate row must fit every member at least
+            # at its own minimum width when the row's width is shared equally.
+            rows = []
+            row: list = []
+            row_max_min = 0
+            for it in items:
+                w = it.widget()
+                mn = max(it.minimumSize().width(), w.minimumSizeHint().width())
+                n = len(row) + 1
+                if row and _share(n) < row_max_min - 1:
+                    rows.append(row)
+                    row, row_max_min = [], 0
+                row.append(it)
+                row_max_min = max(row_max_min, mn)
+            if row:
                 rows.append(row)
-                row, row_max_min = [], 0
-            row.append(it)
-            row_max_min = max(row_max_min, mn)
-        if row:
-            rows.append(row)
 
         y = rect.y() + m.top()
         for row in rows:
             n = len(row)
-            widths = [it.sizeHint().width() for it in row]
-            w_i = (min(avail, widths[0]) if n == 1
-                   else int((avail - space * (n - 1)) / n))
+            if fixed:
+                w_i = col_w
+            else:
+                widths = [it.sizeHint().width() for it in row]
+                w_i = (min(avail, widths[0]) if n == 1
+                       else int((avail - space * (n - 1)) / n))
             row_h = 0
             for it in row:
                 h = it.heightForWidth(w_i)
@@ -149,10 +217,79 @@ class StretchFlow(FlowLayout):
             if not test_only:
                 x = rect.x() + m.left()
                 for it in row:
-                    it.setGeometry(QtCore.QRect(x, y, w_i, row_h))
+                    h_i = row_h
+                    if fixed:
+                        # Top-aligned at its OWN height: a card is never
+                        # stretched to the tallest in its row, so the Top DPS
+                        # card keeps its ~280px body under the divider instead
+                        # of growing to the Test Dummy card's ~400px.
+                        h_i = it.heightForWidth(w_i)
+                        if h_i < 0:
+                            h_i = it.sizeHint().height()
+                        wdg = it.widget()
+                        if wdg is not None:
+                            h_i = max(h_i, wdg.minimumSizeHint().height())
+                    it.setGeometry(QtCore.QRect(x, y, w_i, h_i))
                     x += w_i + space
             y += row_h + space
         return y - space + m.bottom() if rows else 0
+
+
+    @staticmethod
+    def _card_height(it, w_i: int) -> int:
+        """The height `it` really wants at width `w_i` (the balanced path's
+        measurement).
+
+        The same rule the fixed-column ROW grid already places its cards by: ask
+        the item for its height at the assigned width, and when it has no answer,
+        fall back to its sizeHint floored by its minimum — a widget whose sizeHint
+        is not yet computed (or collapsed by an earlier squeeze) reports 1, and
+        the minimum never lies. Kept beside the row path rather than folded into
+        it on purpose: the row grid is what every other `StretchFlow` runs, and
+        its two measurements (the band, and the card placed in it) are not this
+        one rule.
+        """
+        h = it.heightForWidth(w_i)
+        if h < 0:
+            h = it.sizeHint().height()
+            wdg = it.widget()
+            if wdg is not None:
+                h = max(h, wdg.minimumSizeHint().height())
+        return h
+
+    def _layout_balanced(self, rect: QtCore.QRect, items: list, cols: int,
+                         col_w: int, m: QtCore.QMargins, space: int,
+                         test_only: bool) -> int:
+        """Place `items` into `cols` columns, each next card in the shortest.
+
+        Heights are measured ONCE at the column width the whole grid shares, so
+        the choice of column matches the height the card will really take. The
+        tallest column is the flow's height; the only leftover in the whole grid
+        is the difference between the columns at the bottom, instead of a hole
+        under every shorter card in every row.
+        """
+        heights = [self._card_height(it, col_w) for it in items]
+        col_h = [0] * cols
+        columns: list[list[int]] = [[] for _ in range(cols)]
+        for i, h in enumerate(heights):
+            pick = 0
+            for c in range(1, cols):
+                # `- 1` keeps a sub-pixel/near tie on the LEFT column, which is
+                # what stops the two columns swapping on every resize pass.
+                if col_h[c] < col_h[pick] - 1:
+                    pick = c
+            columns[pick].append(i)
+            col_h[pick] += h + space
+        if test_only:
+            return max(col_h) - space + m.bottom()
+        for k, members in enumerate(columns):
+            x = rect.x() + m.left() + k * (col_w + space)
+            y = rect.y() + m.top()
+            for i in members:
+                items[i].setGeometry(
+                    QtCore.QRect(x, y, col_w, heights[i]))
+                y += heights[i] + space
+        return max(col_h) - space + m.bottom()
 
 
 class FlowRow(QtWidgets.QWidget):

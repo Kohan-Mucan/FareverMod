@@ -1243,8 +1243,9 @@ def upgrade_ladder(item_row: dict, level: int | None = None) -> list[dict] | Non
     that +N adds (each upgrade = +10 iLevel, the gear-stats delta) and
     `count` the material cost for the rank. Authored gear (no atb ratio) has
     fixed affixes instead of curves — one column with its own rarity, its
-    own stats as base, and material-only steps. Weapons expand to every
-    rarity from their own up; armor and jewelry carry no per-rarity stats
+    own stats as base, and material-only steps. Weapons expand up the rungs
+    the game can hand them out at (see `sources.obtainable_tiers`); armor and
+    jewelry carry no per-rarity stats
     in-game yet (a later update may add them), so they show their own
     rarity's single column — WITH the same per-rank gains and costs as
     weapons (each upgrade is +10 iLevel for every gear category). Until
@@ -1259,7 +1260,7 @@ def upgrade_ladder(item_row: dict, level: int | None = None) -> list[dict] | Non
     # by the town vendors) shows its shop quality column, so the matrix
     # agrees with the tiles/header/badge instead of a green Uncommon
     # starter column. Non-vendor gear is unaffected (display = authored).
-    from .sources import item_display_rarity
+    from .sources import item_display_rarity, obtainable_tiers
     own = (item_display_rarity(item_row.get("id") or "")
            or item_row.get("rarity") or "").title()
     order = ("Uncommon", "Rare", "Epic", "Legendary")
@@ -1289,18 +1290,27 @@ def upgrade_ladder(item_row: dict, level: int | None = None) -> list[dict] | Non
         return [{"rarity": own, "upgrades": cap, "material": material,
                  "base": base, "steps": steps}]
 
-    # Rarity columns: weapons carry per-rarity stats in-game, so they
-    # expand from the item's own rarity up. Armor and jewelry do NOT use
-    # per-rarity stats yet (a later update may add them) — their expansion
-    # is commented out and they show the single base column. When the game
-    # ships per-rarity data (`rarity_stats`), it overrides every column
-    # automatically for all three.
+    # Rarity columns: weapons carry per-rarity stats in-game, but only up the
+    # rungs the game can HAND THIS WEAPON OUT AT (`sources.obtainable_tiers`).
+    # Armor and jewelry do NOT use per-rarity stats yet (a later update may add
+    # them) — their expansion is commented out and they show the single base
+    # column. When the game ships per-rarity data (`rarity_stats`), it
+    # overrides every column automatically for all three.
+    #
+    # This used to expand EVERY weapon to every rung above its own, which put
+    # an Epic +4 and a Legendary +5 staircase on 32 weapons that exist only as
+    # Rare wherever the game hands them out (every boss weapon, and the
+    # vendor's Rare-only pieces).
     carried = _carried_rarity_stats(item_row, order)
     is_weapon = (category(item_row.get("type")) == "Weapons")
     if carried:
         rarities = order[order.index(own):]
     elif is_weapon:
-        rarities = order[order.index(own):]
+        # `own` joins the set unconditionally: `obtainable_tiers` derives it
+        # from the display rarity, and a card must still be able to state the
+        # piece's OWN column when a caller overrides that rarity
+        allowed = set(obtainable_tiers(item_row.get("id") or "")) | {own}
+        rarities = tuple(r for r in order[order.index(own):] if r in allowed)
     else:
         # armor + jewelry: per-rarity stats not in the game yet — single base column only
         rarities = (own,)
@@ -1749,13 +1759,16 @@ def gear_rarity_tiers(item_row: dict, level: int | None = None) -> list[dict] | 
     """Per-rarity stat values for a gear item at `level` (default the item's
     fixed craft level for crafted gear, else the bundled max level, 25).
     The base column is the item's own rarity at that
-    rarity's max upgrade rank (+N). Weapons expand to every rarity above
-    their own (computed from the curves — they carry per-rarity stats
-    in-game); armor and jewelry do not use per-rarity stats yet (a later
-    update may add them), so their expansion is commented out and they
-    show the single base column. When the item's data carries shipped
-    per-rarity stats (`rarity_stats`, a later game update), those values
-    override the columns for every category automatically.
+    rarity's max upgrade rank (+N). Weapons expand up the rungs the game can
+    actually hand that id out at (`sources.obtainable_tiers` — the Hero Weapon
+    Cache's Epic..Legendary roll and every dungeon's difficulty-scaled roll,
+    so every boss-dropped weapon expands while vendor-only pieces stay
+    single-column); armor and jewelry do
+    not use per-rarity stats yet (a later update may add them), so their
+    expansion is commented out and they show the single base column. When the
+    item's data carries shipped per-rarity stats (`rarity_stats`, a later game
+    update), those values override the columns for every category
+    automatically.
 
     Each entry: {rarity, upgrades (that rarity's max upgrade rank — the
     LIVE cap: Rare 3, Epic 4, Legendary 5; Uncommon cannot upgrade), stats:
@@ -1768,7 +1781,7 @@ def gear_rarity_tiers(item_row: dict, level: int | None = None) -> list[dict] | 
     lvl = _table_level(item_row, level)
     # the own-rarity column is the item's DISPLAY rarity, matching the
     # ladder (Guild Merchant gear shows its shop quality, Rare)
-    from .sources import item_display_rarity
+    from .sources import item_display_rarity, obtainable_tiers
     own = (item_display_rarity(item_row.get("id") or "")
            or item_row.get("rarity") or "").title()
     order = ("Uncommon", "Rare", "Epic", "Legendary")
@@ -1797,9 +1810,17 @@ def gear_rarity_tiers(item_row: dict, level: int | None = None) -> list[dict] | 
             else:
                 _append(rar)
     elif category(item_row.get("type")) == "Weapons":
-        # weapons use per-rarity stats in-game — full computed expansion
+        # Weapons use per-rarity stats in-game, but only up the rungs the game
+        # can actually hand THIS id out at (`obtainable_tiers`): the Hero
+        # Weapon Cache rolls Epic..Legendary for its pool, and every dungeon
+        # rolls its boss weapons up too — only vendor-only pieces stop at
+        # their own column. This used to expand every weapon to every rung
+        # above its own, which printed "Legendary +5" numbers for pieces
+        # that exist only as Rare.
+        allowed = set(obtainable_tiers(item_row.get("id") or "")) | {own}
         for rar in order[order.index(own):]:
-            _append(rar)
+            if rar in allowed:
+                _append(rar)
     else:
         # armor + jewelry: per-rarity stats are not in the game yet (may
         # come in a later update) — COMMENTED OUT; the base column only

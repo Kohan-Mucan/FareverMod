@@ -301,6 +301,41 @@ def test_unknown_flags_are_held_across_a_failed_tick():
     assert state.in_rift is False
     # and the menu gate is held by the same rule: this tick says a menu is up
     assert state.held_menu is True and state.held_menu_gameplay is True
+def test_the_outside_baseline_latches_for_the_session_and_a_failed_read_cannot_fake_it():
+    """`seen_outside` answers "was the app open out in the world BEFORE this
+    instance?" — a fact about the session, not about the tick.
+
+    The one window that needs it (the Run Timer) cannot witness it itself: its
+    HUD_PLACES row is INSTANCE-only, so the placement table refuses to build
+    the window in the open world and it is created on the zone-in tick. The
+    manager's tick runs whatever the windows are, so it is the witness of
+    record. Hence: latched once proven, never un-set by an instance tick, and
+    a failed scene read (unknown) is never mistaken for a proven outside.
+    """
+    reads = TickReads()
+    m = _Walk(instance=(False, False))                    # standing in the world
+    assert reads.read(m, menu=False, menu_gameplay=False).seen_outside is True
+
+    m._instance = (False, True)                           # a RIFT zone-in
+    state = reads.read(m, menu=False, menu_gameplay=False)
+    assert state.seen_outside is True                     # latched, not cleared
+
+    # a fresh session starts under the gate, and an unreadable scene is not
+    # evidence of an outside (so a mid-dungeon attach can never arm a run)
+    fresh = TickReads()
+    inside = _Walk(instance=(True, False))
+    assert fresh.read(inside, menu=False, menu_gameplay=False).seen_outside is False
+    unknown = _Walk(instance=None)
+    assert fresh.read(unknown, menu=False, menu_gameplay=False).seen_outside is False
+
+    # ...and a new session does not inherit the last one's baseline: the
+    # reset drops it, and only a real outside tick latches it again
+    fresh.reset()
+    assert fresh.read(inside, menu=False, menu_gameplay=False).seen_outside is False
+    assert fresh.read(_Walk(instance=(False, False)),
+                      menu=False, menu_gameplay=False).seen_outside is True
+
+
 def test_an_unreadable_menu_is_held_rather_than_taken_as_clear():
     m = _Walk()
     reads = TickReads()
@@ -412,6 +447,14 @@ class _Settings:
 
     def save(self):
         pass
+
+    # The unit-target path reads the per-character hidden lists; empty here,
+    # since this double exists for the static-waypoint tests.
+    def get_entity_hidden_units(self, profile=None):
+        return []
+
+    def get_companion_hidden_units(self, profile=None):
+        return []
 class _Proc:
     pid = os.getpid()
 class _Model:
@@ -441,6 +484,18 @@ class _Model:
 
     def units(self):
         return []
+class _InstanceModel(_Model):
+    """`_Model` with the app's ONE instance gate (`game_state.in_instance`)
+    flipped: what a zone-in produces. No published snapshot exists in a test, so
+    the accessor takes its documented duck-typed fallback."""
+
+    def __init__(self, inside: bool):
+        self.inside = inside
+
+    def is_in_dungeon_or_rift(self):
+        return self.inside
+
+
 def _soulstone_key(poi: dict) -> str:
     """The exact tracker key SoulstoneMixin._soulstone_track_key builds —
     the same shape a minimap click on the soulstone marker passes in."""
@@ -563,6 +618,68 @@ def test_obelisk_waypoint_persists_beyond_15m():
         assert tr.is_tracked("obelisk", key)
     finally:
         tr.shutdown()
+
+def test_an_open_world_waypoint_dies_when_the_player_zones_in():
+    """Tracking an NPC (`pos`, the kind the Codex NPC list and the Entity HUD
+    loot rows use) has to stop when the player enters a dungeon or rift: the
+    waypoint is a coordinate in the OPEN WORLD, so inside an instance the needle
+    can only point at nothing. Reported live as "was tracking a npc and it did
+    not clear when i went into a rift"."""
+    key = "12.3,45.6,7.0|Quartermaster|NPC_Quartermaster_1"
+    model = _InstanceModel(inside=False)
+    tr = TrackController(_Settings())
+    tr.set_model(model)
+    try:
+        tr.track("pos", key)
+        assert tr.is_tracked("pos", key)
+        assert tr._target() is not None          # tracked in the open world
+        model.inside = True                      # ... then the rift opens
+        assert tr._target() is None, (
+            "the overworld waypoint survived the zone-in - the needle keeps "
+            "pointing at an open-world spot inside the instance")
+        # and the real tick drops it, not just the resolve: the needle hides,
+        # Settings no longer carries the target, `changed` fires for the HUD row
+        assert tr._needle is not None and tr._needle.isVisible()
+        tr._tick()
+        assert not tr.is_tracked("pos", key)
+        assert tr.s.track_kind == "" and tr.s.track_id == ""
+    finally:
+        tr.shutdown()
+
+
+def test_a_waypoint_tracked_inside_dies_on_the_way_out():
+    """The other half of the same rule: a chest tracked inside an instance is a
+    coordinate in THAT space, so leaving the dungeon must drop it too."""
+    key = "5.0,6.0,1.0|Chest|Chest_Z1_07"
+    model = _InstanceModel(inside=True)
+    tr = TrackController(_Settings())
+    tr.set_model(model)
+    try:
+        tr.track("chest", key)
+        assert tr._target() is not None          # tracked where it actually is
+        model.inside = False                     # back to the open world
+        assert tr._target() is None, (
+            "a waypoint tracked inside the instance survived the way out")
+    finally:
+        tr.shutdown()
+
+
+def test_a_unit_target_is_not_touched_by_the_instance_gate():
+    """The rule is about FIXED coordinates only: a tracked unit is re-resolved
+    from the live entity list every tick, so entering an instance must leave it
+    alone (the needle shows its searching state while it is unloaded)."""
+    tr = TrackController(_Settings())
+    tr.set_model(_InstanceModel(inside=False))
+    try:
+        tr.track("unit", "Wolf_Z1")
+        assert tr._target() is not None          # ("searching", ...) or a spot
+        tr.model.inside = True
+        tgt = tr._target()
+        assert tgt is not None, "a live unit target was cleared by a zone-in"
+        assert tgt[0] == "searching"             # unloaded in here, not cleared
+    finally:
+        tr.shutdown()
+
 
 # ========================================================================
 # from tests/test_announcement_reader.py

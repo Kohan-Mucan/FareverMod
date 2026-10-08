@@ -1,4 +1,20 @@
-"""Right-click copy context menu (dev-mode helper)."""
+"""Right-click copy context menu (dev-mode helper).
+
+Ctrl+right-click is the DEV OVERRIDE. A widget that uses right-click itself - the
+Codex mob cards toggle visibility, the chest/orb rows mark collected - declares
+`_no_copy_menu = True` so its own action is the only thing that happens; without
+an override the dev info was simply gone on every one of those surfaces, and the
+Codex page is almost entirely those surfaces - the bestiary grid is cards, and
+the dungeon/soulstone/chest lists are rows of them. Holding Ctrl ignores that one
+claim and lets the copy menu through, which is what makes the tool reachable
+everywhere without changing what a plain right-click does.
+
+Only the widget's own claim is override-able: a widget carrying a context menu of
+its own (`CustomContextMenu`/`ActionsContextMenu`), an editable field and a
+`QGraphicsView` still skip, because there their menu IS the feature rather than an
+overlap. Nothing here runs in a frozen build - `install_copy_menu` returns early
+and `_offer` re-checks `is_frozen()`.
+"""
 from __future__ import annotations
 
 import html
@@ -13,6 +29,7 @@ _TAG = re.compile(r"<[^>]+>")
 _EDITABLE = (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit,
              QtWidgets.QAbstractSpinBox, QtWidgets.QComboBox)
 _VIEWS = (QtWidgets.QGraphicsView,)
+_OVERRIDE_MODIFIER = QtCore.Qt.ControlModifier
 
 _filter: "_CopyTextFilter | None" = None
 
@@ -41,9 +58,23 @@ def _widget_text(w: QtWidgets.QWidget) -> str | None:
     return None
 
 
-def _skip(w: QtWidgets.QWidget | None) -> bool:
+def dev_override() -> bool:
+    """Ctrl held right now? The live input state, never a stored flag.
+
+    `queryKeyboardModifiers` is the keyboard-modifier query that does not depend
+    on which widget currently has focus, which is what a ContextMenu handler
+    gets - a fresh state read each time the filter runs.
+    """
+    try:
+        return bool(QtGui.QGuiApplication.queryKeyboardModifiers()
+                    & _OVERRIDE_MODIFIER)
+    except Exception:
+        return False
+
+
+def _skip(w: QtWidgets.QWidget | None, *, honor_own_claim: bool = True) -> bool:
     while w is not None:
-        if getattr(w, "_no_copy_menu", False):
+        if honor_own_claim and getattr(w, "_no_copy_menu", False):
             return True
         if w.contextMenuPolicy() in (QtCore.Qt.CustomContextMenu, QtCore.Qt.ActionsContextMenu):
             return True
@@ -212,8 +243,9 @@ class _CopyTextFilter(QtCore.QObject):
     def _offer(self, gpos: QtCore.QPoint) -> bool:
         if is_frozen():
             return False
+        override = dev_override()
         w = QtWidgets.QApplication.widgetAt(gpos)
-        if w is None or _skip(w):
+        if w is None or _skip(w, honor_own_claim=not override):
             return False
 
         view = None
@@ -239,7 +271,12 @@ class _CopyTextFilter(QtCore.QObject):
         if tip:
             texts.append(("Copy tooltip", _plain(tip)))
 
-        if not texts and not (item_text or tip or w.objectName()):
+        if not override and not texts and not (item_text or tip or w.objectName()):
+            # Nothing copyable here, so stay out of the way. The Ctrl override
+            # skips this test on purpose: the dev block names the element, its
+            # source module and the parent chain even where there is no text,
+            # which is exactly what an anonymous container needs to be asked
+            # about - and it is the only way to reach a card's icon tile.
             return False
 
         dev = _dev_block(w, gpos, view, t or item_text, tip)

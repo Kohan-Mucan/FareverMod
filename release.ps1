@@ -1,4 +1,4 @@
-# release.ps1 - create the GitHub repo + tagged release for Farever Pal.
+# release.ps1 - create the GitHub repo + tagged release for FareverMod.
 #
 # PREREQUISITE: authenticate the GitHub CLI first:
 #     gh auth login
@@ -19,12 +19,14 @@ $verLine = Select-String -Path $initPy -Pattern '__version__\s*=\s*"([^"]+)"' | 
 if (-not $verLine) { throw "Could not find __version__ in $initPy" }
 $version = $verLine.Matches[0].Groups[1].Value
 $tag     = "v$version"
-$exe     = Join-Path $PSScriptRoot 'dist\FareverPal.exe'
+$exe     = Join-Path $PSScriptRoot 'dist\FareverMod.exe'
 
-Write-Host "Farever Pal version: $version  (tag $tag)"
+Write-Host "FareverMod version: $version  (tag $tag)"
 
 # --- pre-flight integrity guard ------------------------------------------
-# The companion is read-only: it has no injector and no write path in the tree.
+# The companion's memory path is read-only: no memory-write primitive may be in the tree.
+# (The user-selected DPS bridge DLL/proxy/injector under dps_bridge + ui/ is the sanctioned
+# exception: it streams combat events out and writes no game state.)
 # Abort if:
 #   1) the working tree is dirty (the released exe must come from committed
 #      source, never local edits), or
@@ -40,15 +42,15 @@ if ($dirty) {
 $pkgDir = Join-Path $PSScriptRoot 'farever_companion'
 $injectPy = Join-Path $pkgDir 'core\inject.py'
 if (Test-Path $injectPy) {
-    throw "Write path regression: '$injectPy' exists. The companion is read-only - refusing to release a build with an injector."
+    throw "Write path regression: '$injectPy' exists. No memory-write module may ship - refusing to release."
 }
 $forbidden = 'WriteProcessMemory', 'PROCESS_VM_WRITE'
 $hits = Select-String -Path (Join-Path $pkgDir '*.py') -Pattern $forbidden -Recurse -List
 if ($hits) {
     $hits | ForEach-Object { Write-Host "  $($_.Filename): $($_.Pattern)" }
-    throw "Write path regression: a memory-write token reappeared in the package source (see above). The companion is read-only - refusing to release."
+    throw "Write path regression: a memory-write token reappeared in the package source (see above) - refusing to release."
 }
-Write-Host "Pre-flight OK: clean tree + no memory-write path present in the package."
+Write-Host "Pre-flight OK: clean tree + no memory-write primitive present in the package."
 
 # --- confirm auth ---
 gh auth status
@@ -67,8 +69,8 @@ git remote get-url origin 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) { $hasOrigin = $true }
 
 if (-not $hasOrigin) {
-    Write-Host "Creating public repo 'FareverPal' and pushing main..."
-    gh repo create FareverPal --public --source=. --remote=origin --push
+    Write-Host "Creating public repo 'FareverMod' and pushing main..."
+    gh repo create FareverMod --public --source=. --remote=origin --push
     if ($LASTEXITCODE -ne 0) { throw "gh repo create failed." }
 } else {
     Write-Host "origin already configured; pushing main..."
@@ -78,21 +80,21 @@ if (-not $hasOrigin) {
 
 # --- create the release with the exe attached ---
 $notes = @"
-Farever Pal $tag
+FareverMod $tag
 
 A read-only, out-of-process live companion overlay for Farever
-(entity/loot overlay, DPS meter, minimap, offline loot predictor).
+(entity/loot overlay, DPS meter, minimap, gear & farm browser).
 
-Download ``FareverPal.exe`` below and run it. Self-contained, no install.
+Download ``FareverMod.exe`` below and run it. Self-contained, no install.
 "@
 
-Write-Host "Creating release $tag with FareverPal.exe attached..."
-gh release create $tag $exe --title "Farever Pal $version" --notes $notes
+Write-Host "Creating release $tag with FareverMod.exe attached..."
+gh release create $tag $exe --title "FareverMod $version" --notes $notes
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed." }
 
 # --- report the asset download URL (for GITHUB_RELEASE_URL in the website .env) ---
 $repo = (gh repo view --json nameWithOwner -q .nameWithOwner)
-$assetUrl = "https://github.com/$repo/releases/download/$tag/FareverPal.exe"
+$assetUrl = "https://github.com/$repo/releases/download/$tag/FareverMod.exe"
 Write-Host ""
 Write-Host "DONE. Release asset download URL (use for GITHUB_RELEASE_URL):"
 Write-Host "  $assetUrl"

@@ -329,7 +329,7 @@ _DEAD_CONSTANT_BASELINE = {
     "OFF_HERO_PLAYER_LEGACY",
     "OFF_DR_BASESKILL", "OFF_DR_TARGET", "OFF_DR_AMOUNT", "OFF_DR_KILL",
     "OFF_DR_CRITICAL",
-    "OFF_BASESKILL_OWNER_PL", "OFF_BASESKILL_KIND", "OFF_BASESKILL_OWNER",
+    "OFF_BASESKILL_OWNER_PL", "OFF_BASESKILL_KIND",
     "OFF_HITDATA_BASESKILL", "OFF_UA_HEALTH",
     "OFF_STRING_BYTES", "OFF_STRING_LENGTH",
     # core/ - read tables and tunables whose reader has gone
@@ -541,12 +541,24 @@ _PROSE_ONLY_DEF_BASELINE = {
     # Without a caller since the aptitude index landed: the drops predicate is
     # spelled out at its use sites instead. Wire it up or delete it.
     "is_for_class",
-    # Moved here from _ORPHAN_DEF_BASELINE (2026-10-07), which the staleness
-    # check retired it from: its only mention outside `core/inspect.py` is the
-    # comment in `core/group_reader.py` naming it beside the "one more hop"
-    # branch, so the function census stopped finding it dead while nothing in
-    # code reads it. Wire it up or delete it.
-    "_array_entries",
+    # Moved here from _DEAD_CONSTANT_BASELINE (2026-10-08), which the staleness
+    # check retired it from. That check reads the tree with THIS file's mentions
+    # removed, so `core/status_attrib.py` naming the offset in its module
+    # docstring (the native BaseSkill owner fallback) cleared the dead-constant
+    # entry - and the doc-only census does not strip this file, so the name was
+    # not prose-only either and fell in the gap between the two ratchets. Its
+    # only surviving mention outside `constants.py` is that docstring: a
+    # native-bridge offset whose reader is the sibling GameFiles tree, like the
+    # OFF_* names above. Review with that tool in hand, not from in here.
+    "OFF_BASESKILL_OWNER",
+    # Same position, same reason: the shared-buff carrier walk in the sibling
+    # bridge_core.h reads this slot, and the Python side deliberately does NOT
+    # (inspect.py resolves the proxy's array field by reflection and then falls
+    # back to a bounded scan, so a constant would be a second opinion rather
+    # than a shared source). It is in constants.py because gen_bridge_offsets.py
+    # refuses to compile an offset the calibrator cannot see - which is exactly
+    # what makes it worth keeping there.
+    "OFF_STATUS_PROXY_ARRAY",
 }
 
 
@@ -1444,7 +1456,7 @@ def _stray_size(stray: Path) -> tuple[int, int]:
 # Scope is every package in `farever_companion/`, layer packages and nested
 # ones alike. The nested set is not a second class: `ui/overlays/` and
 # `ui/pages/` had NO docstring at all, and `ui/overlays/`'s is the one file
-# whose emptiness the frozen build depends on - it is why `FareverPal.spec` has
+# whose emptiness the frozen build depends on - it is why `FareverMod.spec` has
 # to carry every overlay by hand. A file that reads as deliberate because it
 # is empty is worse than one that was never written.
 _DOC_MIN_LINES = 4
@@ -1549,7 +1561,7 @@ def _subpackage_doc_gaps(sources: dict[str, str]) -> list[str]:
 # import in a try/except and reverts the toggle with a log line, so a stale
 # entry ships as "the DPS meter quietly stopped opening for the people who had
 # it on at launch" rather than as a build error.
-SPEC_NAME = "FareverPal.spec"
+SPEC_NAME = "FareverMod.spec"
 OVERLAY_MANAGER = "farever_companion/ui/overlay_manager.py"
 OVERLAY_PKG = "farever_companion.ui.overlays"
 PKG_PREFIX = "farever_companion."
@@ -2292,7 +2304,7 @@ def test_every_subpackage_docstring_names_its_resident_and_import_direction():
     two nested ones - `ui/overlays/` and `ui/pages/`, the second of them the
     entire content of the file - had no docstring at all. Covering the nested
     packages is not a second-class relaxation: `ui/overlays/__init__.py` being
-    empty is exactly what forces `FareverPal.spec` to carry every overlay by
+    empty is exactly what forces `FareverMod.spec` to carry every overlay by
     hand, so a reader who cannot see that in the file has to rediscover it
     from a frozen build that is missing a HUD.
 
@@ -3266,6 +3278,47 @@ HAND_GAME_FACTS: tuple[dict, ...] = (
         "guard": None,
         "detail": "the gear-slot order every contents list sorts by",
     },
+    {
+        "label": "_MOUNT_VENDOR_IDS",
+        "where": "farever_companion/geo/pois.py",
+        "guard": "tests/test_codex.py"
+                 "::test_the_mount_tamers_are_mount_shops_not_plain_vendors",
+        "detail": "the two mount tamers (Perina Wann) the poi_locs sheet files "
+                  "under the plain `vendor` sub_kind - the mount shop listed "
+                  "ZERO placements because of it, and the game's own ids "
+                  "(`MountTamer_NPC_1/2`) are the only other read",
+    },
+    {
+        "label": "_ID_ALIASES",
+        "where": "farever_companion/ui/pages/codex/npc_list.py",
+        "guard": "tests/test_codex.py"
+                 "::test_every_placement_draws_the_character_the_unit_table_gives_it",
+        "detail": "the two `poi_locs` ids the game's unit table spells "
+                  "differently, which no sheet row carries: the Demon "
+                  "Huntresses drop the `er` (`DemonHuntMira` -> "
+                  "`DemonHunterMira`), so both fell through to the vendor's "
+                  "Guild Merchant",
+    },
+    {
+        "label": "_GIFT_TYPE",
+        "where": "farever_companion/data/soulwell.py",
+        "guard": "tests/test_soulwell.py"
+                 "::test_the_station_takes_one_type_and_one_offering_per_gift",
+        "detail": "the Soulwell's acceptance law — only `AugmentDemon` items, "
+                  "one offering per gift id — which lives in bytecode "
+                  "(`getNoMoveItemReason`), not in a sheet, so no sheet row or "
+                  "compiled field can carry it back",
+    },
+    {
+        "label": "_DURATION_ADDS_PER_GIFT",
+        "where": "farever_companion/data/soulwell.py",
+        "guard": "tests/test_soulwell.py"
+                 "::test_offering_seconds_matches_the_durations_the_game_granted",
+        "detail": "whether an offering ADDS its gift's minutes to the buff "
+                  "already running (five gifts = 5 x minutes + one bonus) or "
+                  "replaces them — the SERVER decides, so the only evidence is "
+                  "the logged durations (1620s, 2340s, 4500s)",
+    },
 )
 
 # The hand facts with NO contract test, ratcheted here so the debt is visible —
@@ -3843,7 +3896,7 @@ SCRIPT_REF_BASES = frozenset({
 })
 
 # Extensions a script can point at. `.exe`/`.dll` are deliberately absent: those
-# are build output (`dist/FareverPal.exe`, `dps_bridge/farever_dps.dll`) and are
+# are build output (`dist/FareverMod.exe`, `dps_bridge/farever_dps.dll`) and are
 # never a tracked file, so listing them would only create false failures.
 SCRIPT_REF_SUFFIXES = ("py", "bat", "ps1", "spec", "toml", "cfg", "ini",
                        "json", "yml", "yaml", "md")
@@ -3857,7 +3910,7 @@ _SCRIPT_REF_RE = re.compile(
 # absence, so the guard would otherwise accuse the check of naming a file it
 # needs gone. Add a name here only with the check that requires it absent.
 SCRIPT_REF_ABSENT_BY_DESIGN = {
-    "core/inject.py": "release.ps1 asserts the read-only package has no injector",
+    "core/inject.py": "release.ps1 asserts the package has no memory-write injector module",
 }
 
 
@@ -3989,9 +4042,9 @@ def test_the_script_reference_detector_actually_detects():
              "set REF=%CD%\\..\\GameFiles\\Farever\\hooks\\build_all.bat\n"
              "call .venv\\Scripts\\activate\n"
              "call \"%VS%\\VC\\Auxiliary\\Build\\vcvars64.bat\"\n"
-             "pyinstaller --noconfirm FareverPal.spec\n"
-             "path: dist/FareverPal.exe\n"
-             "url: https://example.test/releases/download/v1/FareverPal.exe\n")
+             "pyinstaller --noconfirm FareverMod.spec\n"
+             "path: dist/FareverMod.exe\n"
+             "url: https://example.test/releases/download/v1/FareverMod.exe\n")
     assert _script_ref_gaps({".github/workflows/ci.yml": quiet}, tracked) == [], (
         "a correct script must not be accused")
 

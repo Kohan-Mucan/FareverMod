@@ -34,10 +34,12 @@ def _cost_label(poi: dict) -> str:
 
 class SoulstoneListCell(QtWidgets.QFrame):
     """One 2-column cell: gold-outlined boss icon + boss name + zone, the
-    same shape as the dungeon list's cells (see DungeonListCell)."""
+    same shape as the dungeon list's cells (see DungeonListCell).
 
-    # left-click tracks the summon spot; keep the app-wide copy menu off it
-    _no_copy_menu = True
+    No `_no_copy_menu`: left-click tracks the summon spot and right-click is
+    unclaimed here, so the app-wide (dev-only) copy menu belongs on this cell --
+    the flag used to sit here and hid the dev info for nothing.
+    """
     pick = QtCore.Signal(object)  # poi row dict
 
     def __init__(self, ui, poi: dict, parent=None):

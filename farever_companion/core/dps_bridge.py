@@ -144,17 +144,17 @@ def describe_port_clash(port: int) -> list[str]:
     for pid in pids:
         name, cmd = info.get(pid, ("?", ""))
         low = cmd.lower()
-        # Image name minus extension, so "FareverPal.exe" -> "fareverpal".
+        # Image name minus extension, so "FareverMod.exe" -> "farevermod".
         base = name.rsplit(".", 1)[0].lower()
         if "monitor_bridge" in low:
             what = ("a stale copy of this monitor - close that window; it is "
                     "holding the port and swallowing every event")
-        elif base == "fareverpal" or "run.py" in low or "farever_companion" in low:
-            what = ("the FareverPal companion app - its bridge listener takes "
+        elif base == "farevermod" or "run.py" in low or "farever_companion" in low:
+            what = ("the FareverMod companion app - its bridge listener takes "
                     "the traffic, so this monitor sees nothing")
         else:
             what = (f"an unrecognised process ({name}) - close it if it is a "
-                    "FareverPal tool")
+                    "FareverMod tool")
         lines.append(f"PID {pid} [{name}]: {what}")
     return lines
 
@@ -396,7 +396,7 @@ class LineRelay:
                 continue
             try:
                 conn.settimeout(RELAY_SEND_TIMEOUT_S)
-                conn.sendall(f"# attached to FareverPal bridge relay "
+                conn.sendall(f"# attached to FareverMod bridge relay "
                              f"{self.host}:{self.port} - raw DLL stream; the app "
                              f"owns 127.0.0.1:49152\n".encode("utf-8"))
             except Exception:

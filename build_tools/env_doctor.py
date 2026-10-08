@@ -196,7 +196,7 @@ def summarize(checks) -> int:
 
 def render(checks) -> str:
     """The human report: every item, and a fix under each one that needs it."""
-    lines = ["", "FareverPal build environment", "=" * 30]
+    lines = ["", "FareverMod build environment", "=" * 30]
     for check in checks:
         lines.append(f"  [{check.status}] {check.name}: {check.detail}")
         if check.status != OK and check.fix:

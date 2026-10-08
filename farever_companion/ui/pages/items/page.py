@@ -86,11 +86,14 @@ class ItemListMixin:
                 self._items_list.addItem(th)
                 for it in rows:
                     li = QtWidgets.QListWidgetItem(support.pool_row_label(it))
-                    # the DISPLAY rarity — Guild Merchant gear (the starter
-                    # weapons) is sold as Rare by the town vendors, so the
-                    # tile shows the shop quality, not the authored starter
-                    # rarity
-                    rar = idata.item_display_rarity(it.get("id") or "")
+                    # the tier the tile READS at — normally the DISPLAY
+                    # rarity (Guild Merchant gear, the starter weapons, is
+                    # sold as Rare by the town vendors, so the tile shows
+                    # the shop quality, not the authored starter rarity),
+                    # but on the WEAPONS tab the Rarity row is a projection
+                    # and the tile takes the tier it is read at (see
+                    # `_items_tile_tier`)
+                    rar = self._items_tile_tier(it.get("id") or "")
                     col = theme.rarity_color(rar)
                     li.setForeground(QtGui.QColor(col))
                     # codex-style tile: icon on top, name underneath — the
@@ -189,7 +192,10 @@ class ItemListMixin:
                 end = min(idx + batch, len(rows))
                 for li in rows[idx:end]:
                     it = idata.item(li.data(_ID)) or {}
-                    rar = idata.item_display_rarity(it.get("id") or "")
+                    # the same tier the population painted (and the Rarity
+                    # row projects on the WEAPONS tab) — the icon must not
+                    # disagree with the name it sits above
+                    rar = self._items_tile_tier(it.get("id") or "")
                     col = theme.rarity_color(rar)
                     li.setIcon(QtGui.QIcon(
                         icons.tile("item", it["id"], support.TILE_ICON,
@@ -208,6 +214,64 @@ class ItemListMixin:
 
         timer.timeout.connect(_tick)
         timer.start()
+
+    def _items_tile_tier(self, item_id: str) -> str:
+        """The tier a tile reads at: the WEAPONS tab's projection when its
+        pick applies to THIS item, else the piece's own display rarity (see
+        `support.weapon_tier_projection` and `support.weapon_tiers`). Both the
+        initial population and the batched icon fill ask here, so a weapon's
+        name and its icon can never disagree about the tier they show.
+
+        The pick only applies to a weapon the game can hand out at it: the
+        tier gate already dropped the others from the list
+        (`support.rarity_passes`), and a tile must never print a tier its own
+        weapon cannot come out at."""
+        it = idata.item(item_id) or {}
+        if (support.weapon_tier_projection(
+                getattr(self, "_items_category", ""))
+                and idata.category(it.get("type")) == "Weapons"):
+            pick = self._items_rarity_pick()
+            if pick in support.weapon_tiers(item_id):
+                return pick
+        return idata.item_display_rarity(item_id)
+
+    def _items_apply_weapon_tier(self) -> None:
+        """Re-tint every weapon tile to the tier the WEAPONS tab is reading
+        at — and back to the piece's own rarity once the tab (or a pick that
+        is not the projection) stops projecting. Only weapon rows are
+        touched: a gear slot's tiles keep their authored rarity, the
+        projection being a Weapons rule (see
+        `support.weapon_tier_projection`).
+
+        Cheap by construction: `icons.tile` is an LRU cache keyed by
+        (kind, id, size, colour), so the second pass over 36 rows re-uses
+        the pixmaps the first one cropped — and the restore pass is skipped
+        outright when nothing was ever painted.
+        """
+        lw = getattr(self, "_items_list", None)
+        if lw is None:
+            return
+        projection = support.weapon_tier_projection(
+            getattr(self, "_items_category", ""))
+        painted = getattr(self, "_items_weapon_tier_painted", False)
+        if not projection and not painted:
+            return                      # nothing painted, nothing to undo
+        pick = self._items_rarity_pick() if projection else ""
+        tier = pick if pick in support.weapon_tier_rarities() else ""
+        for i in range(lw.count()):
+            li = lw.item(i)
+            if li.data(_IS_TYPE_HEADER) or li.data(_CAT) != "Weapons":
+                continue
+            iid = li.data(_ID)
+            # per ITEM, never per tab: a weapon the game only hands out Rare
+            # keeps its own colour even while the tab reads another tier, so
+            # the row never claims a rung its weapon cannot come out at
+            read = tier if tier in support.weapon_tiers(iid) else ""
+            col = theme.rarity_color(read or idata.item_display_rarity(iid))
+            li.setForeground(QtGui.QColor(col))
+            li.setIcon(QtGui.QIcon(
+                icons.tile("item", iid, support.TILE_ICON, col)))
+        self._items_weapon_tier_painted = bool(tier)
 
     def _items_all_refilter(self, _=None) -> None:
         """The Items tab's visibility pass over its own list: the category

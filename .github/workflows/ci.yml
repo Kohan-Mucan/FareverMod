@@ -1,4 +1,4 @@
-# Build-verification CI for FareverPal.
+# Build-verification CI for FareverMod.
 #
 # Builds the native Rust extension, runs the headless tests, and packages the
 # one-file exe on Windows, uploading it as a build-verification artifact.
@@ -72,11 +72,11 @@ jobs:
           }
 
       - name: Package one-file exe
-        run: pyinstaller --noconfirm FareverPal.spec
+        run: pyinstaller --noconfirm FareverMod.spec
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FareverPal-exe
-          path: dist/FareverPal.exe
+          name: FareverMod-exe
+          path: dist/FareverMod.exe
           if-no-files-found: error

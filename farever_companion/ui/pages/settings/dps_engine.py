@@ -108,6 +108,28 @@ Live Diagnostics card."""
         btm_flow = StretchFlow()
         btm_flow.setContentsMargins(0, 0, 0, 0)
         btm_flow.setSpacing(12)
+        # A fixed column grid, not the default per-row packing: these five
+        # cards have very different minimum widths (the Top DPS card's ~749px
+        # against the meter's ~656px), so the default packing gave 2 + 1 + 2 at
+        # one width and 1 + 1 + 1 + 1 + 1 at the next - and the lone card in a
+        # row (always the widest, Top DPS) stretched past every column above and
+        # below it. One column count for the whole flow keeps every card the
+        # same width and the columns aligned, and falls back to a single
+        # full-width column on a narrow window instead of squeezing past
+        # `set_min_share`.
+        btm_flow.set_min_share(535)
+        # ... and balanced into COLUMNS rather than rows, because these five
+        # cards' heights are nowhere near each other: measured at 1280px they are
+        # Test Dummy 449, Top DPS 292, Diagnostics 191, Meter 189, Run Timer 111.
+        # A row grid top-aligns each card at its own height inside a row as tall
+        # as the tallest member, so Top DPS parked under the Dummy card left a
+        # 157px hole under itself, and no re-pairing helps - the closest partner
+        # the 449px card has is 160px away, so the best row pairing and the worst
+        # differ by a few px. Packing each next card into the shorter column puts
+        # the Run Timer under the tall card and fills the hole instead of opening
+        # it, keeping every card its own height and the same column width. See
+        # `StretchFlow.set_balance_columns`.
+        btm_flow.set_balance_columns(True)
         btm_flow.addWidget(self._dps_diag_card)
         btm_flow.addWidget(self._dps_card)
         btm_flow.addWidget(self._top_dps_card)
@@ -623,7 +645,7 @@ Live Diagnostics card."""
         hook = getattr(self.s, "dps_hook_enabled", False)
 
         lines = []
-        lines.append("=== FareverPal DPS Diagnostics ===")
+        lines.append("=== FareverMod DPS Diagnostics ===")
         lines.append(f"Mode: {mode.upper()} (" + ("injector hook ON" if hook else "proxy fallback") + ")")
         if pid:
             lines.append(f"Attached Game: Farever.exe (PID {pid})")

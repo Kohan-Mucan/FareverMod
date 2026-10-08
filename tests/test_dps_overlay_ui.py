@@ -159,13 +159,20 @@ def test_status_row_shows_live_party_roster(ov):
 # --- pill drives the meter; tracker drives the segment ----------------------
 
 def test_tracker_segment_view_drives_displayed_session(ov):
-    # auto picks the boss segment while a boss fight is live
+    # auto waits for boss DAMAGE, not the flag: a live boss fight with an
+    # empty boss board shows Overall; boss damage flips it to the boss board
     m = ov.model
     m.dungeon_boss = "Boss_Foo"
     m._units = [_hero(PA), _foe(BOSS, uid="Boss_Foo", hp=100000.0,
                                   is_boss=True), _foe(FOE)]
     ov._tick()
     assert ov.tracker.in_boss_fight is True
+    assert ov.tracker.session is ov.tracker.overall_session
+    ov.tracker.boss_session.record_hit(
+        target_name="Boss_Foo", target_addr=BOSS, target_hp=90000.0,
+        target_max_hp=100000.0, damage=1000.0, caster_name="You", is_me=True,
+        skill_id="s1", skill_name="Skill", is_crit=False)
+    ov._tick()
     assert ov.tracker.session is ov.tracker.boss_session
 
     # the tracker's segment view (set from the Combat page tabs) shows the
@@ -426,18 +433,20 @@ def test_instance_idle_auto_loads_all_roster_members(ov):
     assert ov._row_widgets["Milo"].total_lbl.text() == "0 DPS"
     assert not ov._row_widgets["Milo"].isHidden()
 
-    # a hit lands -> combat -> idle members drop off the meter
+    # a hit lands -> combat -> idle members drop off the meter: their rows
+    # are destroyed, not parked hidden (a long session with rotating
+    # bystanders must not grow the widget set without bound)
     m.damage.push(DamageEvent(amount=500.0, skill="Sword_Base_Attack",
                               source_addr=PA, target_addr=FOE,
                               t=time.time()))
     _tick(ov)
-    assert ov._row_widgets["Milo"].isHidden()
+    assert "Milo" not in ov._row_widgets
     assert not ov._row_widgets["Me (You)"].isHidden()
 
     # open world (no instance): idle members are never auto-loaded
     ov.model.is_dungeon = False
     _tick(ov)
-    assert ov._row_widgets["Milo"].isHidden()
+    assert "Milo" not in ov._row_widgets
 
 
 def test_solo_status_helper_rules():

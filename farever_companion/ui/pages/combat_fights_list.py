@@ -29,6 +29,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from .. import theme
+from ..dps_source_text import difficulty_label
 from ...data import icons, units as udata
 from ...core.dps_records import fight_failed, was_killed
 from ...config import dps_dir
@@ -42,6 +43,8 @@ from ..combat import (
     scan_history_dir,
     cached_history_sessions,
     summary_line,
+    party_chip,
+    build_chip,
     _clean_session_name,
     _KIND_STYLE,
 )
@@ -58,7 +61,7 @@ _FIGHTS_FILTER_LABELS = {
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 # The difficulty chip on a log row, matching the badge colours the live
-# surfaces use (normal dim, hard orange, heroic gold).
+# surfaces use (dim / orange / gold), keyed on the stored token.
 _MODE_STYLE = {"normal": theme.DIM, "hard": theme.ORANGE,
                "heroic": theme.GOLD}
 
@@ -530,20 +533,38 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
             f"background: {theme.with_alpha(k_col, 28)}; border-radius: 3px; "
             f"padding: 1px 5px;")
         h.addWidget(kind_lbl)
-        # The difficulty the log was written at, when the game named it (it is
-        # the token in the FILE NAME, shown here so the list reads without
-        # opening anything).
-        mode = (r.get("mode") or "").upper()
-        if mode:
-            mode_lbl = QtWidgets.QLabel(mode)
-            mode_col = _MODE_STYLE.get(mode.lower(), theme.MUTED)
+        # The difficulty the log was written at, when the game named it: the
+        # token comes from the FILE NAME, the word shown is the game's own.
+        mode = r.get("mode") or ""
+        label = difficulty_label(mode)
+        if label:
+            mode_lbl = QtWidgets.QLabel(label.upper())
+            mode_col = _MODE_STYLE.get(mode.strip().lower(), theme.MUTED)
             mode_lbl.setToolTip(
-                f"Archived at {mode} difficulty (from the game's own read)")
+                f"Archived at {label} difficulty (from the game's own read)")
             mode_lbl.setStyleSheet(
                 f"font-size: 9px; font-weight: 800; color: {mode_col}; "
                 f"background: {theme.with_alpha(mode_col, 24)}; "
                 f"border-radius: 3px; padding: 1px 5px;")
             h.addWidget(mode_lbl)
+        # Who was PRESENT, off the sidecar (a count; the names are on the
+        # tooltip). Between the difficulty and the verdict chip because it is
+        # the same kind of fact about the log - and because it is the one the
+        # damage numbers cannot answer: the archived player rows are culled to
+        # whoever scored, so a member who was there and dealt nothing exists
+        # only in the recorded party. Nothing is drawn for a log that recorded
+        # nobody (see `party_chip`), so an old archive is bare rather than
+        # claiming an empty party.
+        party_txt, party_tip = party_chip(r.get("summary"))
+        if party_txt:
+            party_lbl = QtWidgets.QLabel(party_txt)
+            party_lbl.setToolTip(party_tip)
+            party_lbl.setStyleSheet(
+                f"font-size: 9px; font-weight: 800; color: {theme.MUTED}; "
+                f"background: {theme.with_alpha(theme.BORDER, 70)}; "
+                f"border-radius: 3px; padding: 1px 5px;")
+            h.addWidget(party_lbl)
+
         # The verdict chip: what the current filter will find in here, said
         # BEFORE the row is opened. Only a verdict the name or the sidecar can
         # support gets a chip - `unknown` stays bare on purpose, because a chip
@@ -582,6 +603,19 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
             f"font-family: monospace; background: transparent;")
         h.addWidget(agg_lbl)
         h.addStretch(1)
+
+        # The client the log was played on, beside the character it belongs to:
+        # "which patch is this from" is a question about the FIGHT, and it is
+        # the one fact here that cannot be re-derived later - a rebuilt log
+        # would carry today's numbers over an older patch unchanged.
+        build_txt, build_tip = build_chip(r.get("summary"))
+        if build_txt:
+            build_lbl = QtWidgets.QLabel(build_txt)
+            build_lbl.setToolTip(build_tip)
+            build_lbl.setStyleSheet(
+                f"font-size: 9px; font-weight: 700; color: {theme.MUTED}; "
+                f"font-family: monospace; background: transparent;")
+            h.addWidget(build_lbl)
 
         char_lbl = QtWidgets.QLabel(f"[{r.get('char', '')}]")
         char_lbl.setStyleSheet(
@@ -633,14 +667,26 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
         # badges and the character tag used to be missing, so the hover text
         # disagreed with the row it belonged to.
         tip_parts = [name, k_txt]
-        if mode:
-            tip_parts.append(mode)
+        if label:
+            tip_parts.append(label.upper())     # the chip's own text
+        if party_txt:
+            tip_parts.append(party_txt)
         if verdict_txt:
             tip_parts.append(verdict_txt)
         tip_parts.append(agg_txt)
+        if build_txt:
+            tip_parts.append(build_txt)
+        elif isinstance(r.get("summary"), dict):
+            # A sidecar that HAS been written and holds no build: say so, so a
+            # missing chip cannot read as a rendering mistake.
+            tip_parts.append("client build not recorded")
         if r.get("char"):
             tip_parts.append(f"[{r['char']}]")
         tip_parts.append(f"{when} · {size_txt}")
+        if party_tip:
+            tip_parts.append(party_tip)
+        if build_tip:
+            tip_parts.append(build_tip)
         hint = ("Click to look inside anyway." if dim_chev
                 else "Click to list this log's fights.")
         log_w.setToolTip(" · ".join(tip_parts) + "\n" + hint)
@@ -795,13 +841,23 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
         mins = int(sess.duration // 60)
         secs = sess.duration % 60
         nm = _clean_session_name(sess.name)
-        # The right-hand slot as Variant C draws it: how long the fight ran and
-        # how many names were in it. The count comes off the session's own
-        # roster, so saying it costs no read, and it is dropped (rather than
-        # printed as `0 players`) for an archive that recorded nobody.
-        players = len(getattr(sess, "players", None) or [])
-        meta = (f"{mins:02d}:{secs:02.0f}"
-                + (f" · {players} players" if players else ""))
+        # The right-hand slot: how long the fight ran, and who was in it — two
+        # different facts that this slot used to state as one number. The
+        # archived player rows are culled to whoever SCORED (see
+        # `is_active_player`), so "5 players" never counted the fifth member who
+        # was present and dealt nothing; the recorded party does
+        # (`CombatSession.roster`). When a party was recorded the slot says both,
+        # labelled, because two bare numbers on one row would read as a
+        # contradiction. An archive from before the capture keeps the single
+        # old number rather than claiming a party it never recorded.
+        scored = len(getattr(sess, "players", None) or [])
+        roster = list(getattr(sess, "roster", None) or [])
+        if roster:
+            meta = (f"{mins:02d}:{secs:02.0f} · {len(roster)} present"
+                    + (f" · {scored} scored" if scored else ""))
+        else:
+            meta = (f"{mins:02d}:{secs:02.0f}"
+                    + (f" · {scored} players" if scored else ""))
 
         row_w = QtWidgets.QFrame()
         row_w.setObjectName("PastFightRow")
@@ -928,6 +984,21 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
                 h.addWidget(dummy_ic)
 
         h.addStretch(1)
+        # The client this fight was played on, drawn from the parsed session (no
+        # index row can answer it for a single fight). Bare when the archive
+        # recorded none, which is the honest render of a non-Steam install
+        # rather than an empty chip.
+        build = str(getattr(sess, "game_version", "") or "").strip()
+        if build:
+            build_lbl = QtWidgets.QLabel(build)
+            build_lbl.setToolTip(
+                f"Client build recorded with this fight: {build}.\nStamped when "
+                f"the fight was archived, so per-skill numbers can differ from "
+                f"what the same fight looks like on a later patch.")
+            build_lbl.setStyleSheet(
+                f"font-size: 10px; font-weight: 700; color: {theme.MUTED}; "
+                f"font-family: monospace; background: transparent;")
+            h.addWidget(build_lbl)
         meta_lbl = QtWidgets.QLabel(meta)
         meta_lbl.setStyleSheet(
             f"font-size: 10.5px; color: {theme.MUTED}; font-family: monospace; "
@@ -973,11 +1044,21 @@ class CombatFightsListMixin(CombatFightsToolbarMixin):
         # Mirror the row itself, and then some: the tooltip carries the fields
         # the row no longer draws (the timestamp, the kind, the boss) so nothing
         # is lost by moving them off its face, and every label the row DOES draw
-        # appears here verbatim (`tests/test_past_fights.py`).
+        # appears here verbatim (`tests/test_past_fights.py`). The party is the
+        # one label whose names the row cannot hold: they are here because the
+        # row's count is only useful if the hover answers "who".
+        party_line = ""
+        if roster:
+            names = [f"{str(e.get('name') or '').strip()}"
+                     + (" (you)" if e.get("is_me") else "")
+                     for e in roster if str(e.get("name") or "").strip()]
+            party_line = "\nParty present: " + " · ".join(names)
         row_w.setToolTip(
             f"{when} · {nm} · {k_txt} · {boss_pre}{boss_txt} · "
             f"{outcome + ' · ' if outcome else ''}{meta} · "
-            f"{sess.group_damage:,.0f} DMG\n"
+            f"{sess.group_damage:,.0f} DMG"
+            + (f"\n{build}" if build else "")
+            + party_line + "\n"
             f"Click to select · double-click to load · right-click for "
             f"Load / Delete")
 

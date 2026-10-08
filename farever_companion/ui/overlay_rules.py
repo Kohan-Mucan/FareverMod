@@ -92,13 +92,23 @@ DUMMY_RANGE_M = 5.0
 
 @dataclass(frozen=True)
 class HudPlace:
-    """Where one HUD window exists, plus the exceptions its row earns."""
+    """Where one HUD window exists, plus the exceptions its row earns.
+
+    `places` answers "may this be SEEN here" — the visibility loop's question.
+    `build_anywhere` answers a different one: "must this EXIST here". They part
+    company only for a window whose hidden ticks do real work (see the field).
+    """
 
     places: frozenset[str]
     card: str | None = None
     instances_only: str | None = None
     dummy_auto: str | None = None
     rule_opens: bool = False
+    #: True when this window's ticks do work that does not need it on screen,
+    #: so the staggered build may not drop it for being out of place. Not
+    #: "build everything early": it is the declaration that a HIDDEN tick is
+    #: load-bearing, and the visibility loop still owns whether it is shown.
+    build_anywhere: bool = False
 
 
 HUD_PLACES: dict[str, HudPlace] = {
@@ -107,8 +117,17 @@ HUD_PLACES: dict[str, HudPlace] = {
     # them on dungeon entry) and sit hidden until their rule fires.
     "dungeon": HudPlace(frozenset({INSTANCE}), card="open_overlay_dungeon",
                         rule_opens=True),
+    # The Run Timer is instance-only like the Dungeon HUD, and is ALSO the one
+    # window whose hidden ticks are load-bearing: RUN starts on a proven
+    # outside -> inside edge and nothing else, so the outside half has to be
+    # observed while the window sits off screen in the world (`_tick` tracks
+    # the edge before its visibility gate for exactly that reason). Dropping it
+    # from the staggered build at locate deleted the only witness, and the
+    # window was then created on the very tick the edge had already passed —
+    # the clock could never start on a zone-in at all. So it must EXIST where
+    # it cannot be seen. The price is one hidden window in the open world.
     "speedrun": HudPlace(frozenset({INSTANCE}), card="open_overlay_speedrun",
-                         rule_opens=True),
+                         rule_opens=True, build_anywhere=True),
     # Everywhere but an instance (Rule C): an open world to gather in and a
     # dungeon that its own HUD covers instead. `rule_opens` stays False — these
     # two are toggled from the Overlays card by hand, so a click means "show it"
@@ -155,6 +174,18 @@ def hud_rule_owns_showing(key: str) -> bool:
     """
     place = HUD_PLACES.get(key)
     return place is not None and place.rule_opens
+
+
+def hud_build_anywhere(key: str) -> bool:
+    """Whether this window must EXIST even where its row hides it.
+
+    The one thing the placement table knows that the visibility loop cannot
+    express: a window can be off screen and still be working. Read by the
+    staggered build, which otherwise drops any key whose place does not exist
+    where the player is standing (see `HudPlace.build_anywhere`).
+    """
+    place = HUD_PLACES.get(key)
+    return place is not None and place.build_anywhere
 
 
 def hud_allowed_places(settings, key: str) -> frozenset[str] | None:

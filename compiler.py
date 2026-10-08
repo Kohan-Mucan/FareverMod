@@ -455,6 +455,11 @@ SHEET_FIELDS = {
     # rows carry one, so most rows bake as bare ids. data/soulwell.py
     # is the reader.
     "counter": ["id", "luckParams"],
+    # Faction standing (the reputation ladders): the row's `texts` name
+    # plus the `reputation.rewards` descs, projected to plain strings
+    # below (icon/objectiveText/npcUnlock ride no reader, so they do
+    # not ship). data/reputation.py is the reader.
+    "faction": ["id", "texts", "reputation"],
 }
 
 # Hardcoded fallback region names
@@ -501,7 +506,7 @@ def _compile_standard_sheets(data_new: Path, data_clean: Path,
     a resolved name and region, item rows get their buff-status refs, and skill
     rows carry everything the description resolver touches (the loose
     skill.json is a compile input only and is not bundled — see
-    FareverPal.spec). Returns {sheet name: rows}.
+    FareverMod.spec). Returns {sheet name: rows}.
     """
     ut_names, ut_gfx = _unit_type_names(data_new)
     named_boss_ids = _named_boss_ids(data_new)
@@ -545,7 +550,7 @@ def _compile_standard_sheets(data_new: Path, data_clean: Path,
                         # range — plus texts.rankDescs and props.rankOverride
                         # for rank-aware text). The loose skill.json is a
                         # compile input only (not bundled — see
-                        # FareverPal.spec), so these fields must ride in the
+                        # FareverMod.spec), so these fields must ride in the
                         # shim for the item page's weapon-skills section to
                         # resolve descriptions in the frozen build. Pruned
                         # to exactly what the resolver touches (~31 KB
@@ -607,6 +612,26 @@ def _compile_standard_sheets(data_new: Path, data_clean: Path,
                 row["gfx"] = line.get("gfx") or (ut_gfx.get(line.get("type")) if name == "units" else None)
                 if name == "items" and line.get("icon"):
                     row["icon"] = line.get("icon")
+                # Faction standing: keep only the per-rank reward descs
+                # (`reputation.rewards[i].desc` -> rank i+1 — index 4 is
+                # the rank-5 duration bonus, index 6 the rank-7 vitality,
+                # which is what fixes the rank mapping). Everything else
+                # in the block (icon, objectiveText, npcUnlock, the
+                # skill/rank gates) rides no reader, so it does not ship
+                # — and the baked-key census stays to the two keys the
+                # reader names (`reputation`, `rewards`).
+                if name == "faction" and isinstance(row.get("reputation"), dict):
+                    descs = [rw.get("desc")
+                             for rw in row["reputation"].get("rewards") or []
+                             if isinstance(rw, dict) and rw.get("desc")]
+                    row["reputation"] = {"rewards": descs} if descs else {}
+                    # the banner gfx's `width`/`height` ride no reader (the
+                    # baked-key census: every other sheet's gfx stops at
+                    # file/size/x/y), so they are trimmed rather than
+                    # baselined.
+                    if isinstance(row.get("gfx"), dict):
+                        row["gfx"].pop("width", None)
+                        row["gfx"].pop("height", None)
                 # Consumables stamp their buff-status ref (props.effects[].
                 # status[].ref, e.g. 'Whetstone_Status') so the runtime can
                 # map a live buff id back to the item that grants it
@@ -734,28 +759,29 @@ def _compile_loc_datasets(data_new: Path, data_clean: Path) -> dict:
 
                 # Deduplicate poi_locs by appending suffix to duplicate IDs.
                 # Two passes:
-                #  1. Named-world-NPC rows (sub_kind "npc") are dropped ENTIRELY.
-                #     They never render in the app (no NPC minimap layer — only
-                #     vendors/petshops show), and their only other use was as
-                #     zone-resolution anchors — a value the app doesn't ship
-                #     them for. The full dump WITH NPCs stays in the GameFiles
-                #     scanner output (Live_Data_Clean) for the website.
-                #  2. Exact repeats — the same named node (same kind, id, zone
+                #  1. Exact repeats — the same named node (same kind, id, zone
                 #     AND position) double-emitted from overlapping world tiles
                 #     is dropped for ANY kind. A second pin at the same spot is
                 #     dead weight (this is what the scanner's spatial dedup
                 #     cannot catch for vendor/petshop kinds, which it refuses
                 #     to merge to protect distinct hub NPCs).
-                #  3. Same-id repeats of other kinds get a numeric suffix so
+                #  2. Same-id repeats of other kinds get a numeric suffix so
                 #     genuinely distinct instances (different positions) stay
                 #     addressable.
+                #
+                # Named-world-NPC rows (sub_kind "npc") used to be dropped
+                # ENTIRELY here, on the grounds that nothing rendered them: the
+                # minimap plots obelisk/respawn and the vendor families only.
+                # The Codex's Other tab now lists exactly these rows
+                # (ui/pages/codex/npc_list.py), and it reads them from this
+                # shim — the loose sheet is a compile input in a release build,
+                # not a shipped file — so dropping them here would leave that
+                # list with the vendors and none of the actual NPCs.
                 if key == "poi_locs" and isinstance(rows, list):
                     seen_spots = set()
                     seen_ids = {}
                     kept_rows = []
                     for row in rows:
-                        if row.get("sub_kind") == "npc":
-                            continue
                         wp = row.get("world_pos") or {}
                         spot = (row.get("sub_kind"), row.get("id"), row.get("zone"),
                                 wp.get("x"), wp.get("y"))
@@ -947,6 +973,16 @@ def compile_to_py(raw_data_path: Path, manifest_path: Path, output_file: Path,
                 entry = {"proba": l.get("proba")}
                 for f in ["item", "lootTable", "minLvl", "maxLvl", "conds"]:
                     if f in l: entry[f] = l[f]
+                # Reputation-gated drops (data/reputation.py): the one
+                # `conditions.reputation` entry, plus the per-drop counts —
+                # 65 of 580 entries carry itemMin/itemMax, so both ride only
+                # when present rather than on every entry.
+                cond = l.get("conditions") or {}
+                if cond.get("reputation"):
+                    entry["conditions"] = cond
+                for f in ("itemMin", "itemMax"):
+                    if f in l:
+                        entry[f] = l[f]
                 loot_entries.append(entry)
             lt_row = {"id": line.get("id"), "loot": loot_entries}
             if line.get("flags"):
@@ -1018,6 +1054,31 @@ def compile_to_py(raw_data_path: Path, manifest_path: Path, output_file: Path,
         for item in items_list:
             if "icon" in item: del item["icon"]
     all_data["info_collection_catalog"] = manifest
+
+    # 4a. Reputation achievements (ach.json, pared): the Reputation-category
+    # rows only — id, name, desc, points and objectives — so the frozen build
+    # knows the factions, their ranks and their achievement rewards without
+    # the whole achievement sheet (data/reputation.py is the reader).
+    for ap in (data_new / "ach.json", data_clean / "ach.json"):
+        if not ap.exists():
+            continue
+        try:
+            ach_raw = json.loads(ap.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        pared = []
+        for arow in ach_raw.get("lines", []):
+            if arow.get("category") != "Reputation":
+                continue
+            row = {f: arow[f] for f in
+                   ("id", "name", "desc", "points", "category",
+                    "objectives", "parent")
+                   if arow.get(f) is not None}
+            if row.get("id"):
+                pared.append(row)
+        if pared:
+            all_data["ach"] = pared
+        break
 
     # 4b. Map Location datasets compilation (POI, Chesto, Gatherables, Orbs, Dungeons)
     all_data.update(_compile_loc_datasets(data_new, data_clean))
@@ -1320,6 +1381,13 @@ def compile_to_py(raw_data_path: Path, manifest_path: Path, output_file: Path,
                     "boss_id": d.get("boss_id"), "boss_name": d.get("boss_name"),
                     "mobs": [{"id": m} for m in d.get("mobs", [])],
                 } for d in all_data.get("dungeons", [])]
+            # The compiled `dungeons` payload IS the sheet's rows, both RIFTS
+            # included: the scanner states each rift's identity on its own row
+            # (`rift_maat` / `rift_shaarlize` - title, boss, level, the shared
+            # 'Rifts' entrance, its mob list and `is_rift`), so the app reads
+            # the rifts straight out of the dump and nothing is carried in from
+            # the codex here. `codex.json["dungeons"]` still feeds the codex's
+            # own boss/mob rows below, which is a different payload.
             bosses_mobs = []
             for d in enriched_dungeons:
                 dname = d.get("name")
@@ -1663,7 +1731,7 @@ def prune_unused_jsons(data_dir: Path):
         "codex.json", "ach.json", "codex_order.json",
         "dungeons.json", "poi_locs.json", "chest_locs.json",
         "gatherable_locs.json", "orb_positions.json", "critter_locs.json",
-        "mob_locs.json", "_version.json",
+        "mob_locs.json", "faction.json", "_version.json",
     }
     
     deleted = 0

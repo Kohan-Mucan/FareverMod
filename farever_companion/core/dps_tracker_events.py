@@ -1,7 +1,8 @@
 """Decoded combat-event application service for the shared DPS tracker."""
 from __future__ import annotations
 
-from ..data import units as udata
+from ..data import names, units as udata
+from . import status_attrib
 from .damage_events import clean_affinity, clean_wire_name
 from .dps_data import (
     DamageEvent,
@@ -632,15 +633,11 @@ class DpsTrackerEvents:
         # either. Without it this path was a way around the scan's guard -
         # the hit on a hard-mode champion mob re-engaged whatever the scan
         # had decided, and re-archived the trash run.
-        if not self.in_boss_fight and (is_boss_unit or (foe is not None and foe[2])):
+        if (not self.in_boss_fight
+                and not getattr(self, "_boss_claim_uncertain", False)
+                and (is_boss_unit or (foe is not None and foe[2]))):
             self.in_boss_fight = True
-            if (getattr(self, "_boss_claim_uncertain", False)
-                    and self.trash_session.group_damage > 0):
-                # Engine-only boss claim: keep the run whole (see `_engage_boss`
-                # and `_scan_foes`). Archiving here is what reset the meter
-                # after every pack on hard/heroic (live 2026-10-03).
-                self.trash_session.close_pack()
-            elif self.trash_session.group_damage > 0:
+            if self.trash_session.group_damage > 0:
                 if self.trash_session.state == "COMBAT":
                     self.trash_session.pause()
                 # Seal the last pack before the archive copies the session, so
@@ -718,24 +715,52 @@ class DpsTrackerEvents:
         # hand-built or third-party event cannot inject a junk bucket key.
         aff = clean_affinity(getattr(ev, "affinity", ""))
 
+        # A chunk stamped with a DERIVED row, on a buff more than one player is
+        # carrying, that this player never cast the parent of: somebody else's
+        # shared buff dealt this to them. `carriers` doubles as the badge's
+        # evidence and as the trace log's, so both come from one walk.
+        snap = getattr(self, "_buff_snap", None) or {}
+        is_derived = names.parent_skill_id(sid) is not None
+        carriers = []
+        if is_derived:
+            for kind, members in snap.items():
+                if kind.lower() == sid.lower():
+                    carriers = list(members)
+                    break
+        from_group = bool(carriers) and len(carriers) > 1
+
+        if is_derived:
+            try:
+                status_attrib.log_event(
+                    sid=sid, attributed=caster, carriers=carriers,
+                    amount=amount, capture_mode=getattr(ev, "capture_mode", ""),
+                    is_me_attributed=is_me, target=target_name,
+                    fight_segment=("dummy" if on_dummy else
+                                   "boss" if on_boss else
+                                   "adds" if self.in_boss_fight else
+                                   "trash" if getattr(self, "_instance_now", False) else
+                                   "open"))
+            except Exception:
+                pass
+
         if on_dummy:
             self.dummy_session.record_hit(target_name=disp_name, target_addr=tgt,
                                           target_hp=target_hp, target_max_hp=target_max,
                                           damage=amount, caster_name=caster, is_me=is_me,
                                           skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
-                                          affinity=aff)
+                                          affinity=aff, from_group_buff=from_group)
         elif on_boss:
             self.boss_session.record_hit(target_name=disp_name, target_addr=tgt,
-                                          target_hp=target_hp, target_max_hp=target_max,
-                                          damage=amount, caster_name=caster, is_me=is_me,
-                                          skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
-                                          affinity=aff)
+                                         target_hp=target_hp, target_max_hp=target_max,
+                                         damage=amount, caster_name=caster, is_me=is_me,
+                                         skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
+                                         affinity=aff, from_group_buff=from_group)
         elif self.in_boss_fight:
             self.boss_adds_session.record_hit(target_name=disp_name, target_addr=tgt,
                                               target_hp=target_hp, target_max_hp=target_max,
                                               damage=amount, caster_name=caster, is_me=is_me,
                                               skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
-                                              affinity=aff)
+                                              affinity=aff, from_group_buff=from_group)
         elif getattr(self, "_instance_now", False):
             # Trash is a DUNGEON/RIFT segment only (live 2026-10-02). The
             # open-world run's trash used to record here, and the zone-in
@@ -747,7 +772,7 @@ class DpsTrackerEvents:
                                           target_hp=target_hp, target_max_hp=target_max,
                                           damage=amount, caster_name=caster, is_me=is_me,
                                           skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
-                                          affinity=aff)
+                                          affinity=aff, from_group_buff=from_group)
         # The boss fight's PER-TARGET split, fed once per hit rather than from
         # inside either session. The fight is two sessions - the boss's damage
         # goes to boss_session, an add's to boss_adds_session - so bucket them
@@ -765,7 +790,7 @@ class DpsTrackerEvents:
                                         target_hp=target_hp, target_max_hp=target_max,
                                         damage=amount, caster_name=caster, is_me=is_me,
                                         skill_id=sid, skill_name=sname, is_crit=ev.crit, when=when,
-                                        affinity=aff)
+                                        affinity=aff, from_group_buff=from_group)
 
         # Kill flags arm the boss end; HP/despawn check above confirms before archiving.
         if ev.kill and on_boss:

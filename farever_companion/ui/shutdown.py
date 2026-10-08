@@ -142,7 +142,7 @@ class ShutdownMixin:
         # otherwise keeps looking for the game, plus the memory/pre-warm
         # timers. See MemoryReclaimerMixin.stop_periodic_timers.
         self.stop_periodic_timers()
-        for attr in ("_update_check_worker", "_update_dl_worker"):
+        for attr in ("_update_check_worker",):
             worker = getattr(self, attr, None)
             if worker is not None:
                 try:

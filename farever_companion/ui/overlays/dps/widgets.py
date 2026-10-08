@@ -240,7 +240,8 @@ class _CaptureBadge(QtWidgets.QLabel):
 
     _SS = ("font-size: 9px; font-weight: 800; letter-spacing: 1px; "
            "color: {color}; border: 1px solid {color}; "
-           "border-radius: 7px; padding: 1px 6px; background: transparent;")
+           "border-radius: 7px; padding: 1px 6px; background: transparent; "
+           "margin-left: 6px;")
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)

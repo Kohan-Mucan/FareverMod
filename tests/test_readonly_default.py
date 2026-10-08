@@ -1,8 +1,11 @@
 """Read-only guarantee: the memory-WRITE path is structurally absent.
 
-The tool can only ever read the game's memory from another process: there is no
-injector and no write primitive anywhere in the tree. These tests lock that
-contract in place so a future edit can't quietly introduce a write path:
+The tool's memory path can only ever read the game's memory from another
+process: no write primitive exists anywhere in the tree. (The user-selected DPS
+bridge DLL — proxy/injector modes under dps_bridge/ + ui/ — is the sanctioned
+exception: it streams combat events out and writes no game state. It contains no
+WriteProcessMemory-style primitive either, which is what these tests lock in
+place so a future edit can't quietly introduce a write path:
 
   (a) no injector module exists -- importing one fails.
   (b) core.player exposes the pure-read PlayerLocator.

@@ -1,11 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
-title FareverPal Combat Bridge Live Monitor
+title FareverMod Combat Bridge Live Monitor
 
 cd /d "%~dp0"
 
 echo ======================================================
-echo Launching FareverPal Combat Bridge Live UDP Monitor...
+echo Launching FareverMod Combat Bridge Live UDP Monitor...
 echo ======================================================
 
 set "PY_EXE="

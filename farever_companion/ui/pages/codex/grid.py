@@ -47,10 +47,19 @@ class CodexGridMixin:
             nearby_info = self._codex_nearby_info() if status_filter == "NEARBY" else {}
             dungeon_tab = current_rid == "Bosses"
             collection_tab = current_rid == "Pets" or tab_label == "Collection"
+            others_tab = current_rid == "Z0" or tab_label in ("Others", "Other")
 
             grid_row = 0
             total_shown = 0
-            if getattr(self, "_chest_orb_kind", None) and (dungeon_tab or collection_tab):
+            if getattr(self, "_npc_list_mode", False) and others_tab:
+                # 'NPC' view on the Other tab: the placed-NPC list replaces
+                # the cards (the NPCs have no codex cards at all).
+                grid_row, total_shown = self._render_npc_list(grid_row)
+            elif getattr(self, "_rep_list_mode", False) and others_tab:
+                # 'Reputation' view on the Other tab: the reputation ladders replace
+                # the cards (ranks are not items either).
+                grid_row, total_shown = self._render_rep_list(grid_row)
+            elif getattr(self, "_chest_orb_kind", None) and (dungeon_tab or collection_tab):
                 # 'Chests' / 'Orbs' view active: remaining uncollected items
                 grid_row, total_shown = self._render_chest_orb_list(grid_row)
             elif getattr(self, "_soulstones_mode", False) and dungeon_tab:
@@ -165,11 +174,14 @@ class CodexGridMixin:
             else:
                 self._codex_search.setPlaceholderText("Search Codex…")
 
-        # Others sub-tabs (All/Shop/Unreleased/TODO). Defaults to All on
-        # entry; the button is built checked, so nothing to force here.
+        # Others sub-tabs (All/Shop/Unreleased/Misc/NPC). Defaults to All on
+        # entry (the button is built checked); leaving the tab drops the NPC
+        # list view so it can't come back up behind another tab's cards.
         is_others_tab = current_rid == "Z0" or tab_label in ("Others", "Other")
         if hasattr(self, "_others_sub_bar"):
             self._others_sub_bar.setVisible(is_others_tab)
+            if not is_others_tab:
+                self._leave_npc_view()
 
         # Dungeons-tab view switcher: the list is the default view; 'Dungeon
         # Mobs' switches to the old card grid, 'Soulstones' to the summon-spot
@@ -229,7 +241,8 @@ class CodexGridMixin:
         if hasattr(self, "_btn_compact"):
             list_view_active = ((is_dungeon_tab and (getattr(self, "_dungeon_list_mode", True)
                                                      or getattr(self, "_soulstones_mode", False)))
-                                or getattr(self, "_chest_orb_kind", None) is not None)
+                                or getattr(self, "_chest_orb_kind", None) is not None
+                                or self._codex_npc_view_active())
             self._btn_compact.setVisible(not list_view_active)
 
         # Legends only on open-world zone tabs; reset filters when leaving
@@ -254,9 +267,12 @@ class CodexGridMixin:
         # Source-badge keys on the card-grid views (Collection pets/mounts/
         # gliders + Others); the Chests/Orbs list views don't use the key
         # system — they get the dungeon zone block instead.
+        # The NPC list has no cards to badge, so it hides the key set the same
+        # way the Chests/Orbs lists do.
         show_source_keys = (current_rid in ("Pets", "Z0")
                             or tab_label in ("Pets", "Collection", "Others", "Other")) \
-            and not (is_collection_tab and getattr(self, "_chest_orb_kind", None))
+            and not (is_collection_tab and getattr(self, "_chest_orb_kind", None)) \
+            and not self._codex_npc_view_active()
         if hasattr(self, "_source_legend_frame"):
             self._source_legend_frame.setVisible(show_source_keys)
             if show_source_keys:
@@ -572,6 +588,34 @@ class CodexGridMixin:
             self._codex_grid.setColumnStretch(c, 1)
         return grid_row, view.row_count
 
+    def _render_rep_list(self, grid_row: int) -> tuple[int, int]:
+        """Render the reputation ladders into the grid (replacing cards while
+        the Other tab's 'Reputation' chip is active). Returns the next grid row and
+        the number of rank rows listed."""
+        from .rep_list import RepListView
+        cols = 4
+        view = RepListView(self)
+        self._codex_rep_list = view
+        self._codex_grid.addWidget(view, grid_row, 0, 1, cols)
+        grid_row += 1
+        for c in range(cols):
+            self._codex_grid.setColumnStretch(c, 1)
+        return grid_row, view.row_count
+
+    def _render_npc_list(self, grid_row: int) -> tuple[int, int]:
+        """Render the placed-NPC list into the grid (replacing cards while
+        the Other tab's 'NPC' chip is active). Returns the next grid row and
+        the number of NPC placements listed."""
+        from .npc_list import NpcListView
+        cols = 4
+        view = NpcListView(self)
+        self._codex_npc_list = view
+        self._codex_grid.addWidget(view, grid_row, 0, 1, cols)
+        grid_row += 1
+        for c in range(cols):
+            self._codex_grid.setColumnStretch(c, 1)
+        return grid_row, view.row_count
+
     def _render_soulstone_list(self, grid_row: int) -> tuple[int, int]:
         """Render the click-to-track soulstone summon-spot list into the grid
         (replacing cards while the 'Soulstones' toggle is active). Returns the
@@ -587,17 +631,29 @@ class CodexGridMixin:
         return grid_row, view.row_count
 
     def _codex_others_sub_tag(self) -> str:
-        """Current Others sub-view ('all' / 'shop' / 'unreleased' / 'misc')."""
+        """Current Others sub-view ('all' / 'shop' / 'unreleased' / 'misc' /
+        'npc')."""
         if hasattr(self, "_others_btn_group"):
             checked = self._others_btn_group.checkedButton()
             return checked.text().lower() if checked else "all"
         return "all"
 
+    def _codex_npc_view_active(self) -> bool:
+        """True when the Other tab's placed-NPC list is the active view."""
+        return bool(getattr(self, "_npc_list_mode", False))
+
     def _codex_others_sub_ok(self, item: dict, sub_tag: str) -> bool:
         """True when an Others-tab (Z0) item belongs in the given sub-view
         (All / Shop / Unreleased / Misc). Shop items are buyable now;
         'unreleased' content isn't in the game yet; 'misc' entries are
-        compiler todo placeholders."""
+        compiler todo placeholders.
+
+        'npc' owns no Z0 CARD at all — it swaps the grid to the placed-NPC
+        list (`NpcListView`), whose rows come from the world index rather than
+        from the codex, so no card belongs to it and this answers False.
+        """
+        if sub_tag == "npc":
+            return False
         if sub_tag == "all":
             return codex.belongs_in_others(item)
         if sub_tag == "shop":
@@ -716,6 +772,44 @@ class CodexGridMixin:
         if getattr(self, "_source_filters", set()):
             self._source_filters = {k for k in self._source_filters if k in present}
 
+    def _leave_npc_view(self) -> None:
+        """Drop the Other tab's placed-NPC / reputation lists and park its
+        sub-bar back on All, so no card view (or another tab) comes up behind
+        a stale list. A no-op unless one of the list chips is actually the
+        active sub-view."""
+        group = getattr(self, "_others_btn_group", None)
+        checked = group.checkedButton() if group is not None else None
+        checked_tag = checked.text().lower() if checked is not None else ""
+        if not getattr(self, "_npc_list_mode", False) \
+                and not getattr(self, "_rep_list_mode", False) \
+                and checked_tag not in ("npc", "rep", "reputation"):
+            return
+        self._npc_list_mode = False
+        self._rep_list_mode = False
+        all_btn = getattr(self, "_others_sub_btns", {}).get("All")
+        if all_btn is not None:
+            all_btn.blockSignals(True)
+            all_btn.setChecked(True)
+            all_btn.blockSignals(False)
+
+    def _on_others_sub_toggled(self, checked: bool) -> None:
+        """An Other sub-view chip was clicked: 'NPC' swaps the grid to the
+        placed-NPC list, 'Reputation' to the reputation ladders, and the card
+        chips (All / Shop / Unreleased / Misc) swap either back."""
+        if not hasattr(self, "_others_btn_group"):
+            return
+        btn = self._others_btn_group.checkedButton()
+        tag = btn.text().lower() if btn is not None else "all"
+        want = ("npcs" if tag == "npc"
+                else "rep" if tag in ("rep", "reputation")
+                else "mobs")
+        cur = ("npcs" if getattr(self, "_npc_list_mode", False)
+               else "rep" if getattr(self, "_rep_list_mode", False)
+               else "mobs")
+        if want == cur:
+            return  # no view change: the group's own refresh is enough
+        self._set_dungeon_view_mode(want)
+
     def _codex_chest_orb_kind(self) -> str | None:
         """Active remaining list kind ('chests'/'orbs'), or None when the card
         grid or dungeon list is showing."""
@@ -768,10 +862,13 @@ class CodexGridMixin:
 
     def _set_dungeon_view_mode(self, mode: str) -> None:
         """Switch between the card grid ('mobs'), the dungeon list ('list'),
-        the soulstone list ('soulstones'), and the chests/orbs lists. Skip
-        the refresh when the view didn't change."""
+        the soulstone list ('soulstones'), the chests/orbs lists, and the
+        Other tab's NPC ('npcs') and reputation ('rep') lists. Skip the
+        refresh when the view didn't change."""
         cur = (getattr(self, "_chest_orb_kind", None)
-               or ("soulstones" if getattr(self, "_soulstones_mode", False)
+               or ("npcs" if getattr(self, "_npc_list_mode", False)
+                   else "rep" if getattr(self, "_rep_list_mode", False)
+                   else "soulstones" if getattr(self, "_soulstones_mode", False)
                    else "list" if getattr(self, "_dungeon_list_mode", False)
                    else "mobs"))
         if mode == cur:
@@ -782,8 +879,12 @@ class CodexGridMixin:
                 self._nav_history.record(f"codex:Collection:{cur.capitalize()}", f"codex:Collection:{mode.capitalize()}")
             elif tab_label == "Dungeons" and mode in ("list", "soulstones", "mobs"):
                 self._nav_history.record(f"codex:Dungeons:{cur.capitalize()}", f"codex:Dungeons:{mode.capitalize()}")
+            elif tab_label in ("Other", "Others") and mode in ("npcs", "rep", "mobs"):
+                self._nav_history.record(f"codex:Other:{cur.capitalize()}", f"codex:Other:{mode.capitalize()}")
         self._dungeon_list_mode = mode == "list"
         self._soulstones_mode = mode == "soulstones"
+        self._npc_list_mode = mode == "npcs"
+        self._rep_list_mode = mode == "rep"
         self._chest_orb_kind = mode if mode in ("chests", "orbs") else None
         if mode in ("chests", "orbs"):
             self._collection_sub = mode

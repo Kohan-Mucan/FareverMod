@@ -17,19 +17,28 @@ def _timing_suffix(dm) -> str:
     return f" ({t})" if t else ""
 
 
+DIFFICULTY_LABELS = {"normal": "Normal", "hard": "Veteran", "heroic": "Heroic"}
+
 _MODE_COLORS = {"normal": "MUTED", "hard": "ORANGE", "heroic": "GOLD"}
+
+
+def difficulty_label(mode: str | None) -> str:
+    """The game's word for a difficulty token, or "" for an unknown token."""
+    return DIFFICULTY_LABELS.get((mode or "").strip().lower(), "")
 
 
 def dungeon_mode_badge(mode: str | None) -> str:
     """Rich-text title-bar span for the current dungeon mode, or "" outside
     an instance. Shared by the Top DPS meter and the Dungeon HUD so both
-    title bars agree on wording + color (normal dim, hard orange, heroic
+    title bars agree on wording + color (Normal dim, Veteran orange, Heroic
     gold)."""
-    color = _MODE_COLORS.get(mode or "")
+    token = (mode or "").strip().lower()
+    color = _MODE_COLORS.get(token)
     if not color:
         return ""
     return (f"&nbsp;&nbsp;<span style='color:{getattr(theme, color)}; "
-            f"font-size:10px; letter-spacing:1px;'>· {mode.upper()}</span>")
+            f"font-size:10px; letter-spacing:1px;'>"
+            f"· {DIFFICULTY_LABELS[token].upper()}</span>")
 
 
 # --- instance difficulty, resolved once for every surface ----------------#
@@ -61,8 +70,8 @@ def resolved_mode(model) -> tuple[str, str]:
             m = None
         if isinstance(m, str) and m.lower() in _MODES:
             return m.lower(), "auto"
-    # The fallback is fixed to Hard, exactly like the Run Timer's (Hard is the
-    # mode the game's own content is balanced against; see DIFFICULTY_DETECTION).
+    # The fallback is fixed to the middle rung, exactly like the Run Timer's
+    # (the mode the game's own content is balanced against; shown as Veteran).
     return MANUAL_FALLBACK_MODE, "manual"
 
 
@@ -168,9 +177,13 @@ def source_status(dm) -> tuple[str, str]:
 
 
 def empty_hint(dm, default: str) -> str:
-    """Empty-state text: honest about calibration while no real events flow."""
+    """Empty-state text: honest about calibration while no real events flow.
+
+    "" when there is no reader at all (no game attached): an empty board
+    with no reader needs no explanation, so callers hide their label on "".
+    """
     if dm is None:
-        return "No real combat events available — numbers only come from the game's damage events."
+        return ""
     try:
         st = dm.status()
     except Exception:

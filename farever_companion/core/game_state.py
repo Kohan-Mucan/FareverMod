@@ -63,6 +63,9 @@ class GameState:
     in_dungeon: bool = False
     in_rift: bool = False
     instance_known: bool = False          # False = the scene read failed
+    seen_outside: bool = False            # some tick this session proved the
+    #                                       player OUTSIDE; per SESSION, not per
+    #                                       window (see TickReads.read)
     map_id: str | None = None
     dungeon_boss: str | None = None
     rift: Any = None                      # RiftStatus, when the model has one
@@ -111,6 +114,7 @@ def read_game_state(m, *, tick: int = 0, menu: bool | None = None,
                     held_menu: bool | None = None,
                     held_menu_gameplay: bool | None = None,
                     instance: tuple[bool, bool, bool] | None = None,
+                    seen_outside: bool = False,
                     map_id: str | None = None) -> GameState:
     """Pack one tick's answers, reading the parts only this builder wants.
 
@@ -131,6 +135,7 @@ def read_game_state(m, *, tick: int = 0, menu: bool | None = None,
         in_dungeon=in_dungeon,
         in_rift=in_rift,
         instance_known=known,
+        seen_outside=seen_outside,
         map_id=map_id,
         dungeon_boss=_safe(lambda: getattr(m, "dungeon_boss", None)),
         rift=_rift_of(m),
@@ -205,6 +210,11 @@ class TickReads:
         self._menu_hide = Held()
         self._in_dungeon = Held()
         self._in_rift = Held()
+        # LATCHED, never un-set by an instance tick: "some tick this session
+        # proved the player OUTSIDE". A window that only exists inside an
+        # instance (the Run Timer) reads it to arm its zone-in edge — see
+        # GameState.seen_outside.
+        self._outside_seen = False
 
     def read(self, m, *, menu: bool | None, menu_gameplay: bool | None,
              instance: tuple[bool, bool, bool] | None = None,
@@ -212,6 +222,15 @@ class TickReads:
         in_dungeon, in_rift, known = (instance if instance is not None
                                       else read_instance(m))
         self.tick += 1
+        # The one fact a window cannot get for itself: a proven OUTSIDE tick.
+        # The visibility rules own which windows exist where, and the Run
+        # Timer's row is INSTANCE-only, so that window does not exist in the
+        # open world to observe it — its own hidden ticks can only ever see
+        # the INSIDE half of the zone-in edge (see
+        # speedrun_overlay._log_probe_edge). The manager's tick runs whatever
+        # the windows are, so it is the witness of record.
+        if known and not (in_dungeon or in_rift):
+            self._outside_seen = True
         state = read_game_state(
             m,
             tick=self.tick,
@@ -222,6 +241,7 @@ class TickReads:
             instance=(self._in_dungeon.update(in_dungeon if known else None),
                       self._in_rift.update(in_rift if known else None),
                       known),
+            seen_outside=self._outside_seen,
             map_id=map_id,
         )
         publish_state(m, state)
@@ -241,6 +261,7 @@ class TickReads:
     def reset(self) -> None:
         """Drop the held flags - a new session must not inherit the last one's."""
         self._in_instance_prev = None
+        self._outside_seen = False
         for h in (self._menu_any, self._menu_hide, self._in_dungeon, self._in_rift):
             h.reset()
 
@@ -294,7 +315,8 @@ def in_instance(m) -> bool:
                 or _live_dungeon(m) or _live_rift(m))
 
 
-#: The three instance difficulties the game itself reports.
+#: The three instance difficulties, as the stored tokens (the game words them
+#: Normal / Veteran / Heroic — see `ui/dps_source_text.DIFFICULTY_LABELS`).
 MODES = ("normal", "hard", "heroic")
 
 

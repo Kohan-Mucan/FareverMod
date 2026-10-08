@@ -723,14 +723,16 @@ def test_run_tile_caption_is_run(ov):
 
 @pytest.mark.parametrize("source", ["auto", "manual"])
 def test_title_shows_title_case_difficulty_without_provenance(ov, source):
-    """The HUD says 'Hard Mode', without the internal auto/manual source."""
+    """The HUD says 'Veteran Mode' — the game's own name for the middle rung,
+    not the stored token — and never the internal auto/manual source."""
     ov._in_dungeon = True
     ov._live_mode = "hard"
     ov._live_mode_src = source
     ov._render()
 
     title = ov.titlebar.title.text()
-    assert title == "Run Timer · Hard Mode"
+    assert title == "Run Timer · Veteran Mode"
+    assert "Hard" not in title
     style = ov.titlebar.title.styleSheet()
     assert "font-size:13px" in style
     assert "font-size:8px" not in style
@@ -864,7 +866,8 @@ def test_copy_buttons_land_a_full_result_line(ov, qapp):
     full = QtWidgets.QApplication.clipboard().text()
     assert "MunsterChuck (Rogue)" in full      # player + class
     assert "Munster" in full                   # boss, by name
-    assert "(Hard)" in full                    # dungeon mode
+    assert "(Veteran)" in full                 # dungeon mode, the game's word
+    assert "Hard" not in full
     assert "full run 01:19.10" in full         # clock spelled out + time
     assert "RUN" not in full                   # never the bare tile caption
 
@@ -1153,7 +1156,13 @@ def test_attaching_without_max_health_fails_closed(tick_overlay):
 
     assert ov.timer.state == ov.timer.READY
     assert ov.boss_timer.state == ov.boss_timer.READY
-    assert "Open FareverPal before zoning in" in ov.upload_lbl.text()
+    # the hold names the reads that are MISSING rather than only advising:
+    # opening the app earlier is the right advice for some holds and nonsense
+    # for this one (the app is attached; the boss reads are what failed)
+    assert "BOSS held" in ov.upload_lbl.text()
+    assert "missing reads:" in ov.upload_lbl.text()
+    assert "boss max HP" in ov.upload_lbl.text()
+    assert "combat state" in ov.upload_lbl.text()
 
 
 def test_attaching_at_full_health_uses_explicit_precombat_baseline(tick_overlay):
@@ -1213,7 +1222,9 @@ def test_attaching_with_unreadable_group_combat_stays_held(tick_overlay):
     _tick(ov, 3 * DETECT_EVERY)
 
     assert ov.boss_timer.state == ov.boss_timer.READY
-    assert "Open FareverPal before zoning in" in ov.upload_lbl.text()
+    assert "BOSS held" in ov.upload_lbl.text()
+    assert "missing reads:" in ov.upload_lbl.text()
+    assert "boss max HP" in ov.upload_lbl.text()
 
 
 def test_normal_zone_in_still_arms_boss_without_an_attach_pristine_proof(tick_overlay):
@@ -1275,7 +1286,8 @@ def test_unlocated_model_never_seeds_a_false_outside_edge(tick_overlay):
     model.inside = True
     _tick(ov)
     assert any("first observation is INSIDE" in line for line in lines)
-    assert "Open FareverPal before zoning in" in ov.upload_lbl.text()
+    assert "no outside baseline" in ov.upload_lbl.text()
+    assert "open FareverMod before zoning in" in ov.upload_lbl.text()
     assert not any("RUN START" in line for line in lines)
     assert ov.timer.state == ov.timer.READY
 
@@ -1322,9 +1334,188 @@ def test_probe_holds_when_first_observed_inside(tick_overlay):
     _tick(ov)
 
     assert any("first observation is INSIDE" in line for line in lines)
-    assert "Open FareverPal before zoning in" in ov.upload_lbl.text()
+    assert "no outside baseline" in ov.upload_lbl.text()
+    assert "open FareverMod before zoning in" in ov.upload_lbl.text()
+    # A legit hold with every read healthy must NOT invent a missing input: the
+    # player reads this line to find out what is wrong, so a phantom cause here
+    # would be a lie exactly where it matters most.
+    assert "missing reads:" not in ov.upload_lbl.text()
     assert not any("RUN START" in line for line in lines)
     assert ov.timer.state == ov.timer.READY
+
+
+def test_the_instance_hold_names_the_read_that_failed(tick_overlay):
+    """The hold says WHICH read is missing, and names the one it means.
+
+    A dead scene read used to look exactly like a healthy idle timer, and the
+    only explanation given blamed the app's start time. Here the instance read
+    is itself what failed, so the message must name it: the locator when there
+    is no address at all, the scene read when the model is located but answers
+    nothing.
+    """
+    ov, model = tick_overlay(town=False)
+    model.player_addr = None                # not even located
+    _tick(ov)
+    text = ov.upload_lbl.text()
+    assert "RUN held — instance unknown" in text
+    assert "missing reads: player locate" in text
+
+    model.player_addr = 0x1234              # located, but the scene read fails
+    model.instance_state = lambda: None
+    _tick(ov)
+    text = ov.upload_lbl.text()
+    assert "RUN held — instance unknown" in text
+    assert "missing reads: instance read" in text
+
+
+class _SessionModel(_TickModel):
+    """A model with the REAL `LiveModel.instance_state()` shape plus the
+    snapshot carrying half of `TickReads`.
+
+    `_TickModel.instance_state` returns a 3-tuple whose second slot is
+    hard-coded False, so no test in this file has ever driven a RIFT — the
+    shape the Run Timer's own row is gated on. Here the read is the two-tuple
+    the real model answers: `(in_dungeon, in_rift)`.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.published_state = None
+        self.zone = "hub_map"
+
+    def publish_state(self, state):
+        self.published_state = state
+
+    def instance_state(self):
+        if self.player_addr is None:
+            return (False, False)
+        if not self.instance_known:
+            return None
+        return (False, self.inside)          # in_dungeon=False, in_rift=inside
+
+    def is_in_dungeon(self):
+        return False
+
+    def is_in_rift(self):
+        return self.inside
+
+    def player_xyz(self):
+        return (0.0, 0.0, 0.0)
+
+
+def _session(town_ticks: int = 3):
+    """Drive the REAL TickReads while the player stands in the open world,
+    then zone IN to a rift and hand back the published snapshot.
+
+    This is the production order, and it is the whole point: the visibility
+    rules are INSTANCE-only, so the manager does not build the Run Timer until
+    the zone-in tick — the manager's own tick is the only witness the open
+    world ever had.
+    """
+    from farever_companion.core import game_state
+    from tests.qt_helpers import destroy
+
+    reads = game_state.TickReads()
+    model = _SessionModel()
+
+    def pump(n=1):
+        for _ in range(n):
+            reads.read(model, menu=False, menu_gameplay=False, instance=None,
+                       map_id=model.zone)
+
+    pump(town_ticks)                          # open world, no window exists
+    assert model.published_state.seen_outside is True
+    model.zone = "rift_map"
+    model.inside = True
+    pump()                                    # the zone-in tick
+    return model, destroy
+
+
+def test_a_run_timer_born_on_the_zone_in_still_arms_from_the_session():
+    """The Run Timer is INSTANCE-only, so the placement table refuses to build
+    it in the open world (`overlay_manager._build_allowed_here`) and it is
+    created on the very tick the player arrives. Its own hidden ticks can
+    therefore NEVER see the outside half of the zone-in edge — which is why a
+    rift zone-in used to hold with "Open FareverMod before zoning in" every
+    time and the clock never started. The manager's tick witnesses the open
+    world whatever the windows are, and the snapshot carries that one fact, so
+    the edge still arms and RUN starts where the player really arrived."""
+    model, destroy = _session()
+    assert model.published_state.in_instance is True
+    ov = SpeedrunOverlay(model, _Settings())
+    ov._poll.stop()
+    ov.show()
+    try:
+        lines = []
+        ov.log.connect(lines.append)
+        _tick(ov)
+        assert ov.timer.state == ov.timer.RUNNING
+        assert any("RUN START on proven outside -> inside" in ln
+                   for ln in lines), lines
+        assert "open FareverMod before zoning in" not in ov.upload_lbl.text()
+    finally:
+        destroy(ov)
+
+
+def test_a_run_timer_opened_after_the_zone_in_still_holds():
+    """The other half of the same promise: the app attached AFTER the player
+    was already inside. No tick ever proved an outside, so RUN holds instead
+    of silently starting a clock mid-instance."""
+    from farever_companion.core import game_state
+    from tests.qt_helpers import destroy
+
+    reads = game_state.TickReads()
+    model = _SessionModel()
+    model.zone = "rift_map"
+    model.inside = True
+    reads.read(model, menu=False, menu_gameplay=False, instance=None,
+               map_id=model.zone)
+    assert model.published_state.seen_outside is False
+
+    ov = SpeedrunOverlay(model, _Settings())
+    ov._poll.stop()
+    ov.show()
+    try:
+        lines = []
+        ov.log.connect(lines.append)
+        _tick(ov)
+        assert ov.timer.state == ov.timer.READY
+        assert any("first observation is INSIDE" in ln for ln in lines), lines
+        assert "no outside baseline" in ov.upload_lbl.text()
+        assert "open FareverMod before zoning in" in ov.upload_lbl.text()
+        assert not any("RUN START" in ln for ln in lines), lines
+    finally:
+        destroy(ov)
+
+
+def test_the_session_baseline_arms_the_edge_once_and_never_a_re_arm():
+    """The session fact says "the app was open BEFORE this instance", which is
+    a statement about the app's start, not about right now. A finished run's
+    in-instance re-arm (`reset(prime_zone=False)`) must therefore still wait
+    for a real outside observation — otherwise the arming would resurrect the
+    very ghost-start that reset exists to prevent, and a back-to-back run
+    would restart itself on a corpse."""
+    model, destroy = _session()
+    ov = SpeedrunOverlay(model, _Settings())
+    ov._poll.stop()
+    ov.show()
+    try:
+        _tick(ov)
+        assert ov.timer.state == ov.timer.RUNNING
+
+        # a finish, then the re-arm the overlay performs while still inside
+        ov.reset(prime_zone=False)
+        assert ov.timer.state == ov.timer.READY
+        assert ov._seen_outside_instance is False
+
+        lines = []
+        ov.log.connect(lines.append)
+        _tick(ov, 3)
+        assert ov.timer.state == ov.timer.READY
+        assert not any("RUN START" in ln for ln in lines), lines
+    finally:
+        destroy(ov)
+
 
 
 def test_probe_logs_fresh_boss_arm_once(tick_overlay):

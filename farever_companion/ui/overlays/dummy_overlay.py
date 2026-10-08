@@ -574,7 +574,7 @@ class DummyOverlay(DummyTestControlMixin, OverlayWindow):
             self.empty_lbl.setText(
                 empty_hint(self._dm(), self._dummy_test_hint(
                     "No training dummy in range.")))
-            self.empty_lbl.show()
+            self.empty_lbl.setVisible(bool(self.empty_lbl.text()))
             self.top_box.hide()
             for w in list(self._row_widgets.values()):
                 w.deleteLater()

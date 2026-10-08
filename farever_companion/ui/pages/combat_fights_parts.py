@@ -299,8 +299,14 @@ def row_search_text(row: dict) -> str:
     """The lower-cased haystack a row is matched against — no log is read.
 
     Built from the descriptor (character, boss, dungeon, display name) plus the
-    sidecar's boss rollup keys and its failure flag. `summary` is absent for a
-    log without a sidecar, which is "failure state unknown", not False.
+    sidecar's boss rollup keys, its recorded PARTY and client build, and its
+    failure flag. `summary` is absent for a log without a sidecar, which is
+    "failure state unknown", not False.
+
+    The party and the build are searchable because they are what a player
+    actually remembers about an old run ("the one with Mira", "before the
+    patch"): a fact the row draws but the search cannot match is a fact the
+    player has to find by scrolling for it.
     """
     parts = [
         row.get("char") or "",
@@ -313,6 +319,11 @@ def row_search_text(row: dict) -> str:
         bosses = summary.get("bosses")
         if isinstance(bosses, dict):
             parts.extend(str(b) for b in bosses)
+        for entry in summary.get("party") or []:
+            if isinstance(entry, dict):
+                parts.append(str(entry.get("name") or ""))
+                parts.append(str(entry.get("hero_class") or ""))
+        parts.append(str(summary.get("game_version") or ""))
         if summary.get("has_failure"):
             parts.extend(_FAILURE_TOKENS)
     return " ".join(parts).lower()
@@ -339,7 +350,7 @@ def build_fights_search_box(text: str, on_change) -> QtWidgets.QLineEdit:
     bar) on each change, and rebuilding the box mid-typing would steal focus.
     """
     box = QtWidgets.QLineEdit()
-    box.setPlaceholderText("Search character, boss, dungeon, failed…")
+    box.setPlaceholderText("Search character, boss, party, build, failed…")
     box.setText(text or "")
     box.setClearButtonEnabled(True)
     box.setFixedWidth(240)

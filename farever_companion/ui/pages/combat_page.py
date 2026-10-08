@@ -27,13 +27,13 @@ from .combat_history import (
 )
 from .combat_roster import (
     CombatRosterMixin,
-    _cp_empty_hint,
 )
 from .combat_rail import (
     CombatRailMixin,
-    _SkillWeaponPopup,
+    _SkillWeaponPopup,  # noqa: F401  (re-exported: tests import it here)
 )
 from .combat_compare import CombatCompareMixin
+from .combat_records import CombatRecordsMixin
 
 
 # The fight-detail rail auto-hides when the page is too narrow to hold it, so
@@ -99,7 +99,8 @@ class _RailResizeWatcher(QtCore.QObject):
         return False
 
 
-class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, CombatCompareMixin):
+class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin,
+                      CombatCompareMixin, CombatRecordsMixin):
     """ControlPanel mixin providing the Combat & DPS page."""
 
     def _page_combat(self) -> QtWidgets.QWidget:
@@ -131,7 +132,8 @@ class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, Co
         title_lbl.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {theme.TEXT};")
         hdr_box.addWidget(title_lbl)
 
-        # Instance difficulty beside the page title (· NORMAL / HARD / HEROIC),
+        # Instance difficulty beside the page title (· NORMAL / VETERAN /
+        # HEROIC — the game's own words),
         # the same resolution and the same badge text the Top DPS HUD and the
         # Run Timer use (see ui/dps_source_text.instance_mode). It lives in the
         # header rather than on the rail's weapon line so it shows whether or
@@ -258,6 +260,9 @@ class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, Co
             ("taken", "🛡 Taken", theme.ORANGE),
             ("compare", "⚖ Compare", theme.GOLD),
             ("fights", "📜 Fights", theme.ACCENT),
+            # Gold, the app's own colour for a personal best (the PB History
+            # button, the Run Timer's NEW BEST row).
+            ("records", "🏆 Records", theme.GOLD),
         ]
         for m, lbl, col in chip_configs:
             b = _chip(lbl, f"View {m}", active_color=col)
@@ -296,10 +301,12 @@ class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, Co
         board_container = self._build_roster_board()
         full_compare = self._build_compare_container()
         rail_container = self._build_combat_rail()
+        records_container = self._build_records_view()
 
         left_lay.addWidget(board_container, 1)
         left_lay.addWidget(full_compare, 1)
         left_lay.addWidget(scroll, 1)
+        left_lay.addWidget(records_container, 1)
 
         self.cp_body_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.cp_body_split.setChildrenCollapsible(False)
@@ -361,7 +368,7 @@ class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, Co
 
     def _on_combat_pane_back(self) -> bool:
         metric = getattr(self, "_cp_metric", "damage")
-        if metric in ("compare", "fights"):
+        if metric in ("compare", "fights", "records"):
             self._set_combat_metric("damage")
             return True
         return False
@@ -460,6 +467,12 @@ class CombatPageMixin(CombatHistoryMixin, CombatRosterMixin, CombatRailMixin, Co
         if getattr(self, "_cp_metric", "damage") == "fights":
             tip = ("Filter the archived fights by kind — Boss and Trash pick "
                    "one, Auto / Overall show every kind")
+        elif getattr(self, "_cp_metric", "damage") == "records":
+            # The records board has one row per boss already: there is nothing
+            # left for a segment to slice, and the archived-only view makes the
+            # "pick ● Live Encounter" hint below wrong. Said out loud instead.
+            tip = "The records board lists archived kills — segments split the " \
+                  "live run"
         else:
             applicable = self._segments_apply_to_shown_session()
             tip = ("" if applicable else

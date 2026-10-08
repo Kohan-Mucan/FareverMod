@@ -10,6 +10,7 @@ stays under the project's 800-line UI budget:
 - soulstones.py soulstone summon-spot tracking, plotting, jumps & list view
 - settings.py   last-hidden undo, bulk actions, card sync
 - card.py       CodexUnitCard widget
+- npc_list.py   the Other tab's NPC list (placed world NPCs) + its tracking
 - map.py        CodexZoneMapCanvas widget
 
 `control_panel.py` imports `CodexPageMixin` from here and mixes it into its base
@@ -20,15 +21,17 @@ from .grid import CodexGridMixin
 from .grouping import CodexGroupingMixin
 from .map_ui import CodexMapUiMixin
 from .soulstones import SoulstoneMixin
+from .npc_list import NpcMixin
 from .settings import CodexSettingsMixin
 from .card import CodexUnitCard
 from .map import CodexZoneMapCanvas
 
 
 class CodexPageMixin(CodexPageBase, CodexGridMixin, CodexGroupingMixin,
-                     CodexMapUiMixin, SoulstoneMixin, CodexSettingsMixin):
+                     CodexMapUiMixin, SoulstoneMixin, NpcMixin,
+                     CodexSettingsMixin):
     """Composed Codex page mixin (assembly + grid + grouping + map +
-    soulstones + settings)."""
+    soulstones + NPCs + settings)."""
 
 
 __all__ = ["CodexPageMixin", "CodexUnitCard", "CodexZoneMapCanvas"]

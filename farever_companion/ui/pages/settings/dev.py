@@ -38,8 +38,9 @@ class SettingsDevMixin:
         tile, sw = self._page_tile(
             "dev_bridge_log", "terminal", "Bridge Dev Log",
             "Writes the flag the bridge binaries look for while logging: with "
-            "it they append bridge_dev.log, without it they write nothing. "
-            "Re-read on every log call, so it applies immediately.",
+            "it they append bridge_dev.log beside the binaries, without it "
+            "they write nothing. Re-read on every log call, so it applies "
+            "immediately.",
             bool(self._dev_flag_path()) and os.path.isfile(self._dev_flag_path()),
             self._on_dev_bridge_log_toggle)
         self._dev_flag_toggle = sw
@@ -85,16 +86,37 @@ class SettingsDevMixin:
 
     # --- the bridge's own log flag ------------------------------------------
     def _dev_game_dir(self) -> str:
-        """The game folder the bridge loads from ('' when none is known)."""
+        """The folder the bridge binaries actually load from ('' when unknown).
+
+        This is ``dps_bridge\\``, NOT the game folder, and the distinction is
+        the whole reason this method exists. Each binary builds its flag path
+        from its OWN module directory (``GetModuleFileNameA`` in
+        ``bridge_core.h``), so a flag written beside the game folder is a file
+        no binary ever opens - the toggle used to write exactly that, and only
+        ``run-log.bat``'s own flag made the log appear, which read as the toggle
+        working when it had done nothing. ``get_bridge_dir()`` resolves the same
+        folder the loader copies the DLLs from and the injector runs out of.
+        """
+        try:
+            from ....core.proc import get_bridge_dir
+            b_dir = get_bridge_dir()
+            if b_dir and os.path.isdir(b_dir):
+                return str(b_dir)
+        except Exception:
+            pass
         try:
             binfo = getattr(self, "_dps_diag_binfo", None) or {}
-            g_dir = binfo.get("game_dir") or self._find_farever_game_dir()
+            dll_path = binfo.get("dll_path") or ""
+            if dll_path:
+                folder = os.path.dirname(str(dll_path))
+                if folder and os.path.isdir(folder):
+                    return folder
         except Exception:
-            return ""
-        return str(g_dir or "")
+            pass
+        return ""
 
     def _dev_flag_path(self) -> str:
-        """Path of the bridge dev-log flag in the game folder ('' if unknown)."""
+        """Path of the bridge dev-log flag beside the DLLs ('' if unknown)."""
         from ....core.bridge_log import dev_flag_path
         try:
             return dev_flag_path(self._dev_game_dir())
@@ -104,7 +126,7 @@ class SettingsDevMixin:
     def _refresh_dev_tab(self) -> None:
         """Repaint the flag row from disk: the flag is the state, and another
         tool (or the launcher) may have written or removed it since."""
-        from ....core.bridge_log import dev_log_path
+        from ....core.bridge_log import DEV_LOG_NAME, dev_log_path
         g_dir = self._dev_game_dir()
         flag = self._dev_flag_path()
         exists = bool(flag) and os.path.isfile(flag)
@@ -121,12 +143,20 @@ class SettingsDevMixin:
             return
         target = ""
         try:
-            target = dev_log_path()
+            # Prefer the folder the toggle actually points at (the bridge
+            # binaries' own folder) over `dev_log_path()`, which follows the
+            # run's env and so names a DIFFERENT file outside run-log.bat - the
+            # note must not tell the reader to watch a file the bridge is not
+            # writing.
+            if g_dir and os.path.isdir(g_dir):
+                target = os.path.join(g_dir, DEV_LOG_NAME)
+            else:
+                target = dev_log_path()
         except Exception:
             target = ""
         if not g_dir:
-            note.setText("Game folder not found: there is nothing to put the "
-                         "flag beside. Scan the folder on the DPS tab first.")
+            note.setText("Bridge folder not found: there is nothing to put the "
+                         "flag beside. Load the bridge from the DPS tab first.")
         elif exists:
             where = target or "the path named on the flag's first line"
             note.setText(f"On: flag {flag} -> log {where}. Every bridge binary "
@@ -140,16 +170,24 @@ class SettingsDevMixin:
     def _on_dev_bridge_log_toggle(self, on: bool) -> None:
         """Write/remove the flag. No Settings field: the flag file IS the
         state, and it lives beside the DLL, not in settings.json."""
-        from ....core.bridge_log import remove_dev_flag, write_dev_flag
+        from ....core.bridge_log import (DEV_LOG_NAME, remove_dev_flag,
+                                         write_dev_flag)
         g_dir = self._dev_game_dir()
         if not g_dir:
-            self.log("Dev: no game folder found - nothing to put the bridge "
+            self.log("Dev: no bridge folder found - nothing to put the bridge "
                      "log flag beside.")
             self._refresh_dev_tab()
             return
         try:
             if on:
-                written = write_dev_flag(g_dir)
+                # Name the log explicitly. `dev_log_path()` with no env set
+                # (i.e. a normal launch, not run-log.bat) resolves to the app's
+                # moddata folder - so the toggle would send the bridge's log
+                # somewhere nobody looks, while `bridge_dev.log` beside the
+                # binaries stayed empty and read as "the toggle did nothing".
+                # Beside the DLLs is where a dev opening this tab expects it.
+                target = os.path.join(g_dir, DEV_LOG_NAME)
+                written = write_dev_flag(g_dir, log_path=target)
                 self.log(f"Dev: bridge dev log enabled ({written})" if written
                          else "Dev: could not write the bridge log flag "
                               "(no dev-log path for this run?)")

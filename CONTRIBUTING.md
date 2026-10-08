@@ -1,4 +1,4 @@
-# Contributing to Farever Pal
+# Contributing to FareverMod
 
 Thanks for wanting to help. This guide gets you from a fresh clone to a running
 build and a green test suite, then points you at the deeper docs.
@@ -9,7 +9,7 @@ this guide → `docs/ARCHITECTURE.md` → the source for the area you're touchin
 
 ## The one thing to internalise first
 
-Farever Pal is **read-only and out-of-process**. It reads the game's memory from
+FareverMod is **read-only and out-of-process**. It reads the game's memory from
 a separate process and never writes to the game, automates input, or touches the
 network. The only in-game code interface is the optional DPS DLL / proxy /
 injector path owned by `core/dps_bridge.py`. That path is still read-only in
@@ -131,8 +131,8 @@ your clone doesn't include that data:
 
 - The **headless tests** run regardless — they use the logic, not the live data
   files where possible.
-- The **offline loot predictor** and icons need the sheet/icon files present; if
-  they're absent the app degrades (placeholder icons, empty predictions) rather
+- The **Gear/Items/Farm tabs** and icons need the sheet/icon files present; if
+  they're absent the app degrades (placeholder icons, empty drop data) rather
   than crashing.
 - Point the app at your own local copy of that data if you need the full app
   locally. Don't commit large game assets to the repo.

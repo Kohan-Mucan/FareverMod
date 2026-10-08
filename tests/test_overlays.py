@@ -643,7 +643,9 @@ def test_top_dps_title_shows_the_fallback_mode_inside_a_dungeon():
         QtWidgets.QApplication.processEvents()
         title = ov.titlebar.title.text()
         assert "TOP DPS" in title
-        assert "· HARD" in title
+        # the GAME's word for the middle rung, never the stored token
+        assert "· VETERAN" in title
+        assert "HARD" not in title
         assert "manual fallback" in ov.titlebar.title.toolTip()
     finally:
         destroy(ov)
@@ -664,7 +666,8 @@ def test_dps_analysis_header_badges_the_same_mode():
     try:
         host.model = _Model_(None, inside=True)
         host._refresh_combat_mode_badge()
-        assert "· HARD" in host.cp_mode_badge.text()
+        assert "· VETERAN" in host.cp_mode_badge.text()
+        assert "HARD" not in host.cp_mode_badge.text()
         assert not host.cp_mode_badge.isHidden()
         assert "manual fallback" in host.cp_mode_badge.toolTip()
 
@@ -1339,3 +1342,39 @@ def test_skill_type_labels():
     assert skills.skill_type("Axe_Boomerang_Skill_Passive") == "Passive"
     # boss AoE hit-zone rows (nature 6) are never player skills
     assert skills.skill_type("MChuck_CheeseCatapultArea") is None
+
+
+# ========================================================================
+# minimap_render: the shop kiosks' ring colour
+# ========================================================================
+
+def test_the_three_shop_kinds_draw_three_different_minimap_kiosks():
+    """A vendor, a pet shop and a mount shop used to be one kiosk wearing three
+    labels: `poi_pixmap` hard-coded GOLD for the ring on all three, and the kind
+    table it should have read said GOLD for all three too.
+
+    Both read `theme.KIND_COLOR` now - and so does the Codex NPC directory
+    (`codex.npc_list._role_accent`), which is what makes the map and the
+    directory tell the three kinds apart the same way. The uncollected chest
+    keeps the thin gold border it was asked for.
+    """
+    from farever_companion.data import icons
+    from farever_companion.ui import theme
+    from farever_companion.ui.overlays import minimap_render as mr
+
+    shops = ("vendor", "petshop", "mountshop")
+    assert len({theme.KIND_COLOR[k] for k in shops}) == 3, theme.KIND_COLOR
+
+    art = {k: bytes(mr.poi_pixmap(None, k, "x", 18).toImage().constBits())
+           for k in shops}
+    assert len(set(art.values())) == 3, \
+        "the three shop kinds still draw one kiosk"
+    # ... and each is the `shop` sprite ringed in ITS kind's colour, not merely
+    # three pixmaps that happen to differ
+    for k in shops:
+        want = icons.marker("shop", 18, accent=theme.KIND_COLOR[k])
+        assert art[k] == bytes(want.toImage().constBits()), k
+
+    chest = bytes(mr.poi_pixmap(None, "chest", "x", 18).toImage().constBits())
+    gold = bytes(icons.marker("chest", 18, accent=theme.GOLD).toImage().constBits())
+    assert chest == gold, "the uncollected chest's gold border was asked for"

@@ -11,6 +11,11 @@ rem truncates the log you are reading. The two used to share one variable,
 rem which meant moving the bridge log also moved run.log.
 set "FAREVER_DEV_CRASH_LOG=%~dp0run.log"
 set "FAREVER_BRIDGE_DEV_LOG_DIR=%~dp0dps_bridge"
+rem Shared-party-buff status damage attribution mode: log | split | est.
+rem   log  = record (attributed vs carriers) to status_attrib.jsonl, rows unchanged
+rem   split= re-credit those chunks across the live carriers, rows marked "(est.)"
+rem   est  = keep rows where they are, mark them "(est.)"
+set "FAREVER_STATUS_ATTRIB=split"
 
 :run
 call ".\.venv\Scripts\python.exe" run.py

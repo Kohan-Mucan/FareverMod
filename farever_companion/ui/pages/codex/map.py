@@ -8,6 +8,38 @@ from .... import constants as APP_C
 from .... import paths
 
 
+# The vendor pin's sprite, in the order to try. `shop` is the one shop sprite
+# the atlas ships; `npc` - the plain person - is the honest substitute if that
+# ever stops resolving, because a vendor IS an NPC and the pin still has to say
+# "someone stands here" rather than nothing.
+#
+# The chain this replaced was `shop` -> `currency` -> `vendor`, and it could
+# never have fired: the atlas has never had `currency` or `vendor`
+# (`atlas.find_entry("minimap", name)` is None for both), and the
+# `isNull()` test guarding each attempt could not fire either - `icons.marker`
+# never returns None or a null pixmap, it degrades a missing asset to a bare
+# accent dot by design. Two phantom fallbacks plus an unreachable guard meant a
+# renamed atlas sheet would silently turn every vendor pin into a gold dot.
+_VENDOR_SPRITES = ("shop", "npc")
+
+
+def _first_resolvable_marker(names: tuple[str, ...], size: int,
+                             accent: str) -> QtGui.QPixmap | None:
+    """`icons.marker` for the first of `names` the SHIPPED atlas really has.
+
+    The choice is made against the atlas (`icons.atlas_sprite_resolvable` - the
+    same check the Entity HUD's gatherable rows use for exactly this reason),
+    never by testing the pixmap `marker` hands back: that is never null, so a
+    chain built on it can only ever take its first branch. Returns None when
+    not one name resolves, which lets the caller draw its plain pin knowingly
+    instead of drawing a dot it believes is a sprite.
+    """
+    for name in names:
+        if icons.atlas_sprite_resolvable("minimap", name):
+            return icons.marker(name, size, accent=accent)
+    return None
+
+
 class CodexZoneMapCanvas(QtWidgets.QWidget):
     """Interactive Zone Spawn Map canvas widget for the Codex page."""
     def __init__(self, model, settings, parent=None):
@@ -180,11 +212,8 @@ class CodexZoneMapCanvas(QtWidgets.QWidget):
             rift_pm = None
 
         try:
-            vendor_pm = icons.marker("shop", 22, accent=theme.GOLD)
-            if not vendor_pm or vendor_pm.isNull():
-                vendor_pm = icons.marker("currency", 22, accent=theme.GOLD)
-            if not vendor_pm or vendor_pm.isNull():
-                vendor_pm = icons.marker("vendor", 22, accent=theme.GOLD)
+            vendor_pm = _first_resolvable_marker(_VENDOR_SPRITES, 22,
+                                                 theme.GOLD)
         except Exception:
             vendor_pm = None
 

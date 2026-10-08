@@ -196,13 +196,17 @@ def _expected_base_cols(ladder, label, cols):
 
 # --- fixtures: expected geometry for the catalog items ----------------------
 #
-# Mace_Benediction (Rare mace, lvl 25): three rarities, overlapping ladders.
-#   Rare cols 1-4, Epic cols 5-7, Legendary cols 8-10
-#   Faith ladder:   Rare [24 26 28 30] | Epic new [32 36 38] | Leg new [40 44 48]
-#   Epic's base 28 is shown inside Rare's block (col 3); Legendary's base 32
-#   inside Epic's block (col 5).
-# Book_Start (starter book sold as Rare): a full Rare/Epic/Legendary matrix
-#   like Mace_Benediction — the vendor sells the starter weapons scaled.
+# Sword_Craft ("Glory") is the MULTI-RARITY fixture: one of the Hero Weapon
+#   Cache's four pool ids, and the only weapons in the catalog the game hands
+#   out above Rare (`data/items.obtainable_tiers` derives that from the boxes'
+#   own loot rows). Three blocks: Rare cols 1-4, Epic 5-9, Legendary 10-12.
+#   Every boss and vendor weapon is Rare everywhere the game hands it out and
+#   renders ONE column, so anything that needs the staircase uses a cache id.
+#   (Mace_Benediction — this fixture before the clamp — is a Rare-only boss
+#   weapon: it used to be given all three blocks, which is how a Rare mace
+#   came to print Epic and Legendary rows.)
+# Book_Start (starter book sold as Rare): ONE column — the Guild Merchant
+#   sells it Rare and no box grants it higher.
 # Chest_RDemon_Ass (Rare armor): one rarity, four stats; Armor's four values
 #   drive the block width.
 # Shoulders_RManfish_FigAss (Rare armor): one rarity, four stats.
@@ -210,35 +214,52 @@ def _expected_base_cols(ladder, label, cols):
 
 @_SECTION_MARK
 def test_subheaders_on_true_base_and_max_columns():
-    grid = _grid("Mace_Benediction")
-    # the refreshed stat sheet widened every rarity's climb, so the
-    # columns no longer overlap: Epic's base clears Rare's max and
-    # Legendary's clears Epic's (the old 24/28/32 sheet shared columns)
+    grid = _grid("Sword_Craft")
+    # the refreshed stat sheet widened every rarity's climb, so the columns
+    # no longer share: Epic's base clears Rare's max, Legendary's clears
+    # Epic's
     assert _labels(grid, 1) == [
         (1, "base"), (4, "max"),                   # Rare base + its 3 upgrades
         (5, "base"), (7, "base"), (9, "max"),      # Epic base, Leg base, Epic max
         (12, "max"),                               # Legendary max
     ]
-    # Guild Merchant gear expands from its shop quality: Book_Start (a
-    # starter weapon sold as Rare) shows the same full Rare/Epic/Legendary
-    # matrix as Mace_Benediction — with the refreshed sheet its columns no
-    # longer share either (same shape as the mace above)
-    assert _labels(_grid("Book_Start"), 1) == [
-        (1, "base"), (4, "max"),
-        (5, "base"), (7, "base"), (9, "max"),
-        (12, "max"),
-    ]
+    # ...and a weapon the game hands out at ONE rung shows that one rung:
+    # Book_Start is sold Rare by the Guild Merchant and no box rolls it
+    # higher, so a second block would be a claim no drop row makes
+    assert _labels(_grid("Book_Start"), 0) == [(0, "STATS"), (1, "RARE")]
+    assert _labels(_grid("Book_Start"), 1) == [(1, "base"), (4, "max")]
 
 
 @_SECTION_MARK
 def test_subheaders_dont_stack_on_shared_columns():
-    # Book_WaterOrbs L1: Epic's base shares its column with Legendary's base
-    # (Faith 3 lands on col 2 for both) — the subheader row collapses to one
-    # label per column instead of stacking two in one cell.
-    grid = _grid("Book_WaterOrbs", level=1)
-    assert _labels(grid, 1) == [
-        (1, "base"), (2, "base"), (6, "max"), (8, "max"),
+    # A rarity whose base repeats a value a lower rarity already printed lands
+    # on THAT column (a shared value keeps the lower block's column and takes
+    # the higher rarity's colour), so two rarities' bases can want one
+    # column: the subheader row collapses them to a single label instead of
+    # stacking two in one cell. The ladder is rendered here rather than
+    # looked up because no compiled one does this today — weapons clamp to
+    # the rungs their own containers grant, and the refreshed sheet left every
+    # multi-rarity block wider than the last.
+    def step(gain: int) -> dict:
+        return {"gains": [{"label": "Faith", "value": gain}]}
+
+    ladder = [
+        # Rare 10 11 12 13 -> cols 1-4
+        {"rarity": "Rare", "base": [{"label": "Faith", "value": 10}],
+         "steps": [step(1), step(1), step(1)]},
+        # Epic base 12 repeats Rare's col 3, then 15 18 -> cols 5-6
+        {"rarity": "Epic", "base": [{"label": "Faith", "value": 12}],
+         "steps": [step(3), step(3)]},
+        # Legendary base 12 repeats it too, then 22 -> col 7
+        {"rarity": "Legendary", "base": [{"label": "Faith", "value": 12}],
+         "steps": [step(4)]},
     ]
+    grid = build_upgrades_matrix(ladder)
+    assert _labels(grid, 1) == [
+        (1, "base"), (3, "base"), (4, "max"), (6, "max"), (7, "max"),
+    ]
+    cols = [c for c, _ in _labels(grid, 1)]
+    assert len(cols) == len(set(cols))     # one label per column, never two
 
 
 @_SECTION_MARK
@@ -379,17 +400,20 @@ def test_tint_on_true_base_columns_catalog_sweep():
             hdr_cols = [c for c, _ in hdr]
             assert len(hdr_cols) == len(set(hdr_cols)), (iid, level, hdr)
             checked += 1
-    assert checked > 1000     # sanity: the catalog sweep isn't silently empty
+    # sanity: the sweep isn't silently empty. Only the four cache weapons are
+    # multi-rarity now (they render at every level); every other item renders
+    # once — 718 renders at the time of writing
+    assert checked > 700
 
 
 @_SECTION_MARK
 def test_bars_span_true_base_to_max_with_nubs():
-    grid = _grid("Mace_Benediction")
+    grid = _grid("Sword_Craft")
     bars = _bar_rows(grid)
     assert [(r, c, cs) for (r, c, cs, _) in bars] == [
-            (6, 1, 4),     # Rare (base + its 3 upgrades)
-            (7, 5, 5),     # Epic — clears Rare's max with the refreshed stats
-            (8, 7, 6),     # Legendary — clears Epic's max
+            (7, 1, 4),     # Rare (base + its 3 upgrades)
+            (8, 5, 5),     # Epic — clears Rare's max with the refreshed stats
+            (9, 7, 6),     # Legendary — clears Epic's max
         ]
     for (_r, _c, _cs, w) in bars:
         lay = w.layout()
@@ -414,7 +438,7 @@ def test_single_column_item():
                        (5, "Vitality")):
         assert _tinted_cols(grid, row) == [1], row
         cell = _cell(grid, row, 1)
-        assert _fill_rgb(cell.styleSheet()) == (83, 155, 245), row  # Rare
+        assert _fill_rgb(cell.styleSheet()) == (47, 125, 225), row  # Rare
     # a real range (base != max): the nub+bar+nub container spans cols 1-4
     bars = _bar_rows(grid)
     assert [(r, c, cs) for (r, c, cs, _) in bars] == [(6, 1, 4)]
@@ -554,7 +578,7 @@ def test_epic_armor_is_locked_renders_base_only():
 def test_level_label_above_base_column():
     """With a level_label, it sits at grid (0, 1) — directly above the first
     rarity's base column — and every other row shifts down by one."""
-    it = idata.item("Mace_Benediction")
+    it = idata.item("Sword_Craft")
     ladder = idata.upgrade_ladder(it, level=25)
     plain = build_upgrades_matrix(ladder)
     assert [(r, c, w.text()) for (r, c, _, w) in _rows(plain)
@@ -964,6 +988,25 @@ def _visible_rarities(p):
     return out
 
 
+def _weapon_rows(p):
+    """Every WEAPON row on the browse list, hidden or not."""
+    out = []
+    for i in range(p._items_list.count()):
+        li = p._items_list.item(i)
+        if li.data(support.TYPE_HEADER_ROLE):
+            continue
+        it = idata.item(li.data(support.ID_ROLE) or "") or {}
+        if idata.category(it.get("type")) == "Weapons":
+            out.append(li)
+    return out
+
+
+def _visible_weapon_ids(p) -> set:
+    """The ids of the weapon rows the current filter leaves showing."""
+    return {li.data(support.ID_ROLE) for li in _weapon_rows(p)
+            if not li.isHidden()}
+
+
 @_SECTION_MARK_2
 def test_rarity_buttons_are_one_at_a_time_toggles():
     """The pinned Rarity row is single-select and strict: exactly one button
@@ -1044,39 +1087,77 @@ def test_rarity_counts_are_real_with_no_quick_tab_picked():
               for r, c in p._items_rarity_toggle_chips.items() if c.isVisible()}
     assert all(counts.values()), counts
 
-    # every tier at once: the numbers are exactly the visible rows
-    p._items_rarity_filter = set(support.RARITY_BUTTONS)
-    p._items_refilter()
-    assert _visible_rarities(p) == counts
+    # Every tier's number is exactly the rows clicking it would show. That is
+    # no longer the same as "rows whose own rarity is that tier": a weapon's
+    # row carries ONE rarity while the game can hand it out at several, so the
+    # gate (support.rarity_passes) is what a chip's number has to match.
+    for tier in counts:
+        p._items_rarity_filter = {tier}
+        p._items_refilter()
+        shown = [p._items_list.item(i) for i in range(p._items_list.count())
+                 if not p._items_list.item(i).data(support.TYPE_HEADER_ROLE)
+                 and not p._items_list.item(i).isHidden()]
+        assert len(shown) == counts[tier], tier
 
 
 @_SECTION_MARK_2
 def test_rarity_buttons_hide_tiers_the_tab_never_rolls():
-    """Every weapon in the data is Rare, so the Weapons tab shows only the
-    RARE button — a dead tier never sits in the row. Armor carries all
-    four; Jewelry has no Common (accessories start at Uncommon); Dungeons
-    hides the whole row (both tiers always show, so no tier switch)."""
+    """A tier that can never match is worse than no tier, so the row only
+    carries tiers its tab can honour. The WEAPONS tab carries no Rarity row
+    at all — every weapon shows at once at its own tier — so all five
+    buttons hide there. Armor carries every tier it rolls (all but
+    Legendary); Jewelry has no Common (accessories start at Uncommon);
+    Dungeons hides the whole row (both tiers always show, so no tier
+    switch)."""
     p = _page()
     assert p._items_category == "Weapons"        # the default tab
     assert {r: c.isVisible() for r, c in p._items_rarity_toggle_chips.items()} \
-        == {"Common": False, "Uncommon": False, "Rare": True, "Epic": False}
+        == {"Common": False, "Uncommon": False, "Rare": False,
+            "Epic": False, "Legendary": False}
+    assert not p._items_rarity_toggle_box.isVisible()
 
-    # the hidden tiers are cosmetic: dropping them can't change a weapon row
-    before = _visible_rarities(p)
-    assert before and "Epic" not in before and "Uncommon" not in before
-    p._items_rarity_filter.discard("Epic")
+    # No gate on the Weapons tab: all 36 weapons show at once, whatever the
+    # stored pick holds.
+    all_ids = {li.data(support.ID_ROLE) for li in _weapon_rows(p)}
+    assert len(all_ids) == 36
+    assert _visible_weapon_ids(p) == all_ids
+    p._items_rarity_filter = {"Epic"}
     p._items_refilter()
-    assert _visible_rarities(p) == before
+    assert _visible_weapon_ids(p) == all_ids
 
-    # Armor rolls every tier; Jewelry has no Common. Dungeons shows both
-    # tiers at once with no tier switch, so its whole rarity row hides.
-    for tab, hidden in (("Armor", set()), ("Jewelry", {"Common"}),
-                        ("Dungeons", {"Common", "Uncommon",
-                                      "Rare", "Epic"})):
+    # Armor rolls every tier but Legendary; Jewelry has no Common.
+    # Dungeons shows both tiers at once with no tier switch, so its whole
+    # rarity row hides.
+    for tab, hidden in (("Armor", {"Legendary"}),
+                        ("Jewelry", {"Common", "Legendary"}),
+                        ("Dungeons", set(support.RARITY_BUTTONS))):
         p._items_rarity_filter = set(support.RARITY_DEFAULT)
         support.quick_pick(p, tab)
         assert {r for r, c in p._items_rarity_toggle_chips.items()
                 if not c.isVisible()} == hidden, tab
+
+
+@_SECTION_MARK_2
+def test_weapons_tab_shows_every_weapon_with_no_rarity_row():
+    """The WEAPONS tab carries no Rarity row: every weapon shows at once,
+    each read at its own display tier. The per-rung ladder still lives on
+    the tiles themselves (`icons.weapon_rungs`) and on the Dungeons tab's
+    boss chips — the browse list just no longer gates on it."""
+    p = _page()
+    assert not support.weapon_tier_projection(p._items_category)
+    assert not p._items_rarity_toggle_box.isVisible()
+
+    every = _visible_weapon_ids(p)
+    assert len(every) == 36                      # the whole catalog, unfiltered
+    rare = QtGui.QColor(theme.rarity_color("Rare"))
+    assert all(li.foreground().color() == rare
+               for li in _weapon_rows(p) if not li.isHidden())
+
+    # leaving the tab keeps each piece's own rarity, so a gear slot can
+    # never show a weapon tier
+    support.quick_pick(p, "Armor")
+    assert _weapon_rows(p), "the weapon rows never leave the model"
+    assert all(li.foreground().color() == rare for li in _weapon_rows(p))
 
 
 @_SECTION_MARK_2
@@ -1136,9 +1217,16 @@ def test_rarity_button_counts_follow_the_active_dungeon_faction():
         picked = p._items_rarity_filter
         p._items_rarity_filter = set(support.RARITY_BUTTONS)
         try:
+            # weapons count under every rung the game can hand them out at
+            # (a level-12+ boss weapon rolls Epic/Legendary), like the
+            # buttons themselves (`support.rarity_counts`)
+            def holds(i, rar):
+                if idata.category((idata.item(i) or {}).get("type")) \
+                        == "Weapons":
+                    return rar in idata.obtainable_tiers(i)
+                return idata.item_display_rarity(i) == rar
             return {rar: sum(1 for i in pool
-                             if idata.item_display_rarity(i) == rar
-                             and _usable(p, i))
+                             if holds(i, rar) and _usable(p, i))
                     for rar in p._items_rarity_toggle_chips}
         finally:
             p._items_rarity_filter = picked
@@ -3430,24 +3518,22 @@ def test_dungeon_pane_tiles_are_filled_in_their_own_tier_colour():
         dview.icons.item_tile = orig
 
     # ...and the boss row's weapon chips take their tier colour too, instead
-    # of the app accent
+    # of the app accent — read at max, so Legendary with full bands for
+    # boss weapons. Compared tile-for-tile (a dominant-colour read cannot
+    # survive the three rung bands the max reading paints on the icon).
     support.quick_pick(p, "Dungeons")
     dv = p._items_dungeon_view
     dv._pick("Manfish")
     row = dv._rows[("Manfish", "Crabgantua")]
     chips = [w for w in row.findChildren(QtWidgets.QFrame)
-             if w.objectName() == "Card"]
+             if w.property("weapon_iid")]
     assert chips
     for chip in chips:
+        iid = chip.property("weapon_iid")
         icon = next(w for w in chip.findChildren(QtWidgets.QLabel) if w.pixmap())
-        # the fill is the pixmap's commonest opaque colour; it lands a hair
-        # off the palette entry because the tile paints an alpha wash
-        dom = _dominant_colour(icon.pixmap())
-        rare = QtGui.QColor(theme.rarity_color("Rare"))
-        got = QtGui.QColor(dom)
-        assert abs(got.red() - rare.red()) <= 6 \
-            and abs(got.green() - rare.green()) <= 6 \
-            and abs(got.blue() - rare.blue()) <= 6, dom
+        assert icon.pixmap().toImage() == dview.icons.item_tile(
+                iid, idata.item(iid)["name"], 32,
+                theme.rarity_color("Legendary"), rungs=()).toImage(), iid
 
 
 @_SECTION_MARK_2
@@ -3500,6 +3586,159 @@ def test_dungeon_faction_chips_are_radio_style_and_weapons_stay_on_the_boss_row(
     assert all(idata.item_display_rarity(w) == "Rare" for w in crab["weapons"])
 
 
+def _weapon_chips(row) -> list:
+    """The weapon chips on a boss row, in build order — the row's own Frames
+    that carry an item id (`weapon_iid`)."""
+    return [w for w in row.findChildren(QtWidgets.QFrame)
+            if w.property("weapon_iid")]
+
+
+def _chip_colours(row) -> set:
+    """The colour each weapon chip in `row` is painted with, read off the name
+    label — the one place `dungeon_box.paint_weapon_chip` writes the tier."""
+    out = set()
+    for chip in _weapon_chips(row):
+        sheet = chip.findChild(QtWidgets.QLabel, "WeaponChipName").styleSheet()
+        out |= {p.split(":", 1)[1].strip() for p in sheet.split(";")
+                if p.strip().startswith("color:")}
+    return out
+
+
+def _block_rungs(chip) -> list:
+    """The rung colours a weapon chip's FRAME paints, in segment order — the
+    distinct colours in its stop list, read off the gradient itself.
+
+    The frame is what HOLDS the icon and the name, so it is the
+    surface a reader actually sees at card size; the icon's 32px mark is a
+    hint beside it. Same rungs, same order, one source
+    (`support.projection_rungs`).
+    """
+    sheet = chip.styleSheet()
+    return list(dict.fromkeys(re.findall(
+        r"rgba\((\d+,\d+,\d+),", sheet)))
+
+
+def _rgb(rung: str) -> str:
+    """The `r,g,b` triple a rarity colour is written as in a style sheet."""
+    h = theme.rarity_color(rung).lstrip("#")
+    return f"{int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)}"
+
+
+@_SECTION_MARK_2
+def test_every_boss_row_reads_its_weapons_at_their_max_rung():
+    """A boss row's chips are always read at the highest rung the game hands
+    each piece out at — no switch, nothing to pick.
+
+    Every boss-dropped weapon can roll Rare, Epic and Legendary (the sheet's
+    `generationChance` roll, scaled by each dungeon's difficulties), so each
+    chip reads Legendary. What is LISTED never moves: the row still carries
+    exactly its two weapons, one chip each, and the items themselves stay
+    authored Rare.
+    """
+    p = _page()
+    support.quick_pick(p, "Dungeons")
+    dv = p._items_dungeon_view
+    dv._pick("Manfish")
+    g = dv._groups["Manfish"]
+    crab = next(b for b in g["bosses"] if b["boss_id"] == "Crabgantua")
+    key = ("Manfish", "Crabgantua")
+
+    row = dv._rows[key]
+    # ONE chip per weapon, and no tier switch anywhere on the row
+    assert len(_weapon_chips(row)) == len(crab["weapons"]) == 2
+    assert row.findChild(QtWidgets.QWidget, "WeaponTierSwitch") is None
+    assert all(idata.obtainable_tiers(w) == ("Rare", "Epic", "Legendary")
+               for w in crab["weapons"])
+    # each chip painted at its own max rung — Legendary for boss weapons
+    for chip in _weapon_chips(row):
+        iid = chip.property("weapon_iid")
+        assert support.weapon_tiers(iid)[-1] == "Legendary"
+    assert _chip_colours(row) == {theme.rarity_color("Legendary")}
+    # nothing about WHAT is listed moved: the row lists its own weapons, and
+    # the items themselves stay authored Rare
+    assert {w.property("weapon_iid") for w in _weapon_chips(row)} == set(
+        crab["weapons"])
+    assert all(idata.item_display_rarity(w) == "Rare" for w in crab["weapons"])
+
+
+@_SECTION_MARK_2
+def test_the_rung_bands_follow_the_max_reading_and_nothing_else():
+    """The chip FRAME states which reading the row shows. A boss weapon read
+    at its max rung carries every segment from its drop rung up to that max —
+    the segments ARE the rungs the dungeon can hand it out at — around a plain
+    body, while the icon stays a plain tile in the read colour: split-colour
+    bands at 32px read as noise next to the weapon art.
+
+    `support.projection_rungs` is that rule — the piece's own tier up to the
+    tier it is being read at — and the frame is built from it.
+    """
+    from farever_companion.data import icons
+
+    p = _page()
+    support.quick_pick(p, "Dungeons")
+    dv = p._items_dungeon_view
+    dv._pick("Manfish")
+    key = ("Manfish", "Nepsilon")
+    row = dv._rows[key]
+    chip = _weapon_chips(row)[0]
+    iid = chip.property("weapon_iid")
+    icon = chip.findChild(QtWidgets.QLabel, "WeaponChipIcon")
+
+    # ...because the game rolls this piece Rare/Epic/Legendary, its max is
+    # Legendary and the projection spans the whole ladder
+    assert idata.obtainable_tiers(iid) == ("Rare", "Epic", "Legendary")
+    assert support.weapon_tiers(iid)[-1] == "Legendary"
+    assert support.projection_rungs(iid, "Legendary") == (
+        "Rare", "Epic", "Legendary")
+
+    # the ICON is the plain tile any other surface would draw at this tier —
+    # with no rung frame, because the chip's own frame already states the
+    # ladder and a second one at 32px would double-stutter it
+    assert icon.pixmap().toImage() == icons.item_tile(
+        iid, idata.item(iid)["name"], 32,
+        theme.rarity_color("Legendary"), rungs=()).toImage()
+    # the FRAME at its max rung: one segment per reachable rung, left to
+    # right at full strength, around a plain panel body
+    assert _block_rungs(chip) == [_rgb("Rare"), _rgb("Epic"),
+                                  _rgb("Legendary")]
+    assert theme.with_alpha(theme.rarity_color("Legendary"), 255) \
+        in chip.styleSheet()
+    body = chip.findChild(QtWidgets.QFrame, "WeaponChipBody")
+    assert body is not None and f"background: {theme.PANEL}" \
+        in chip.styleSheet()
+    # the row lists its own weapons, one chip each
+    assert len(_weapon_chips(row)) == 2
+    neps = next(bb for bb in dv._groups["Manfish"]["bosses"]
+                if bb["boss_id"] == "Nepsilon")
+    assert {w.property("weapon_iid") for w in _weapon_chips(row)} == set(
+        neps["weapons"])
+
+
+@_SECTION_MARK_2
+def test_projection_rungs_is_empty_without_a_reading_to_show():
+    """Guards on the rule: a non-weapon, an unknown id, a tier off the ladder or
+    the piece's own tier all mark nothing."""
+    assert support.projection_rungs("", "Legendary") == ()
+    assert support.projection_rungs("NoSuchItem_ZZZ", "Legendary") == ()
+    assert support.projection_rungs("Glory_NotAnId", "mythic") == ()
+    # a real weapon the game can drop at three rungs: its own tier is the floor
+    assert support.projection_rungs("Sword_Craft", "Legendary") == (
+        "Rare", "Epic", "Legendary")
+    assert support.projection_rungs("Sword_Craft", "Rare") == ()
+
+
+@_SECTION_MARK_2
+def test_a_chip_block_is_painted_strong_enough_to_read():
+    """The frame carries the ladder, so its segments are full-strength rung
+    colour: a 2px edge has no room for a tint to survive on. The body it
+    frames stays plain panel, so the edge is the whole statement.
+    """
+    from farever_companion.ui.pages.items import dungeon_box
+
+    assert dungeon_box._CHIP_EDGE_ALPHA == 255
+    assert dungeon_box._CHIP_EDGE_PX == 2
+
+
 # --- the weapon "Weapon Upgraded" passive is NOT a ladder row ---------------
 
 @_SECTION_MARK_2
@@ -3527,15 +3766,17 @@ def test_item_page_passive_block_owns_the_upgrade_passive():
     passive is NOT re-listed there any more — the bar's tile and effect text
     already say that sentence."""
     p = _page()
-    p._items_show_id("Axe_Boomerang")
+    p._items_show_id("Axe_Boomerang")             # Cheese Moon: boss drop
     glyph = [t for t in _pane_labels(p) if "⚡" in t]
-    # one value per rarity, each labelled, and each painted in the SAME
-    # colour the ladder tints that rarity's column with — a single merged
-    # "+1/+2/+3/+4/+5" run is what this line must never go back to.
-    # CALIBRATED IN GAME: a Cheese Moon reads 2% / 3% / 4% by rarity (the
-    # ladder's ranks 2 / 3 / 4), i.e. one rank under each rarity's cap —
-    # stats.granted_rank is the one place that shift lives
-    for rar, val in (("Rare", "+2%"), ("Epic", "+3%"), ("Legendary", "+4%")):
+    # one value per RUNG the game hands the piece out at, each labelled and
+    # painted in the SAME colour the ladder tints that rarity's column with —
+    # a single merged "+1/+2/+3/+4/+5" run is what this line must never go
+    # back to. CALIBRATED IN GAME: a Cheese Moon reads +2% at Rare (the
+    # ladder's rank 2, one under Rare's cap — stats.granted_rank is the one
+    # place that shift lives); the dungeon roll hands the axe out higher too,
+    # so Epic +3% and Legendary +4% read beside it, each in its own colour.
+    for rar, val in (("Rare", "+2%"), ("Epic", "+3%"),
+                      ("Legendary", "+4%")):
         want = f"{rar} {val}"
         assert any(want in t and theme.rarity_color(rar) in t
                    and "(Passive)" in t for t in glyph), (want, glyph)
@@ -3543,6 +3784,14 @@ def test_item_page_passive_block_owns_the_upgrade_passive():
     for t in glyph:
         assert t.index("(Passive)") < t.index("Weapon Upgraded"), t
     assert not any("all allies within 40m" in t for t in glyph), glyph
+    # ...and the cache's own sword IS handed out three ways, so it spells all
+    # three rungs out — the mechanism is not lost, only the made-up rungs are
+    p._items_show_id("Sword_Craft")              # Glory
+    glyph = [t for t in _pane_labels(p) if "⚡" in t]
+    for rar, val in (("Rare", "5%"), ("Epic", "6%"), ("Legendary", "7%")):
+        want = f"{rar} {val}"
+        assert any(want in t and theme.rarity_color(rar) in t
+                   and "(Passive)" in t for t in glyph), (want, glyph)
 
 
 @_SECTION_MARK_2
@@ -3556,9 +3805,10 @@ def test_effect_path_trait_paints_every_rarity_in_one_ordered_run():
     ai/workspace/buffy/compare_trait_vs_game.py).
 
     The ladder's rank 1 is a value granted_rank gives nobody and must not
-    appear at all. Martyr of Enripit is Rare: 5% now, 6% / 7% higher up."""
+    appear at all. Glory, the Hero Weapon Cache's sword, is handed out at all
+    three tiers: 5% now, 6% / 7% higher up."""
     p = _page()
-    p._items_show_id("GS_Nova")
+    p._items_show_id("Sword_Craft")
     glyph = [t for t in _pane_labels(p) if "⚡" in t]
     assert glyph
     # each rarity's value is labelled AND painted in its own colour, in order
@@ -3582,3 +3832,14 @@ def test_effect_path_trait_paints_every_rarity_in_one_ordered_run():
         assert "Rare" not in sentence and "X%" not in sentence, tail
     # the ladder's base (4%, rank 1) is unreachable and must never appear
     assert not any("4%" in t.split("Weapon Upgraded")[1] for t in glyph), glyph
+    # a boss weapon follows the same rule: Martyr of Enripit rolls Rare / Epic
+    # / Legendary from its dungeon, so its run spells all three rungs — the
+    # one-rung pin this test used to carry came from the old "boss weapons
+    # are Rare-only" claim, not a row
+    p._items_show_id("GS_Nova")
+    glyph = [t for t in _pane_labels(p) if "⚡" in t]
+    for rar, val in (("Rare", "5%"), ("Epic", "6%"),
+                      ("Legendary", "7%")):
+        want = f"{rar} {val}"
+        assert any(want in t and theme.rarity_color(rar) in t
+                   for t in glyph), (want, glyph)

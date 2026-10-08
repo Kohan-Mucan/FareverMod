@@ -49,7 +49,7 @@ from typing import Callable, Iterable
 #: proxy_exports still regenerates its .def/forwarders, but the native build
 #: no longer produces or ships version.dll. A future game update that makes
 #: its importers reliable can bring it back without
-#: new C work - but it is not packed into the app (FareverPal.spec) and not
+#: new C work - but it is not packed into the app (FareverMod.spec) and not
 #: offered in the picker, because its importers (SDL3/DLSS/Streamline) may
 #: never load at all. See dps_bridge/README.md.
 PROXY_DLL_NAMES: tuple[str, ...] = ("dinput8.dll", "userenv.dll")

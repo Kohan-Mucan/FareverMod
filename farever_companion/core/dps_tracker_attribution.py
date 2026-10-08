@@ -30,6 +30,10 @@ def merge_player_into(dst, src) -> None:
         dsp.damage += ssp.damage
         dsp.hit_count += ssp.hit_count
         dsp.crit_count += ssp.crit_count
+        # The crit DAMAGE has to fold with the crit COUNT, or resolving a
+        # placeholder keeps "critted 40 times" beside "dealt 0 critting" - a
+        # row that contradicts itself.
+        dsp.crit_damage += ssp.crit_damage
         dsp.min_hit = min(dsp.min_hit, ssp.min_hit)
         dsp.max_hit = max(dsp.max_hit, ssp.max_hit)
         dsp.heals += ssp.heals
@@ -44,7 +48,13 @@ def merge_player_into(dst, src) -> None:
             dsp.affinity_damage[aff] = dsp.affinity_damage.get(aff, 0.0) + dealt
         for aff, hits in ssp.affinity_hits.items():
             dsp.affinity_hits[aff] = dsp.affinity_hits.get(aff, 0) + hits
+        for aff, crits in ssp.affinity_crits.items():
+            dsp.affinity_crits[aff] = dsp.affinity_crits.get(aff, 0) + crits
         dsp.last_hit_ts = max(dsp.last_hit_ts, ssp.last_hit_ts)
+        # The badge has to survive a merge: a placeholder row resolved into its
+        # owner would otherwise lose the "from group" marking and the damage
+        # would read as the owner's own cast again.
+        dsp.from_group_buff = dsp.from_group_buff or ssp.from_group_buff
 
 
 _GENERIC_PLAYER_LABELS = frozenset({"Player", "Hero", "You", "Unknown"})

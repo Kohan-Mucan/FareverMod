@@ -1,14 +1,14 @@
 ---
-title: Farever Pal - Live Companion Tool for Farever
-description: A lightweight, read-only companion tool for Farever. Features live DPS meters, entity overlays, loot predictors, and minimaps. Safe, out-of-process, and stable.
+title: FareverMod - Live Companion Tool for Farever
+description: A lightweight, read-only companion tool for Farever. Features live DPS meters, entity overlays, gear browser, loot tables, and minimaps.
 layout: default
 ---
 
-# Farever Pal
+# FareverMod
 
-**Farever Pal** is a lightweight, out-of-process companion tool for the game **Farever**. It provides real-time information and overlays without ever modifying the game's memory or code, ensuring a safe and stable experience.
+**FareverMod** is a lightweight, out-of-process companion tool for the game **Farever**. It provides real-time information and overlays without ever modifying the game's memory or code, ensuring a safe and stable experience.
 
-[**Download Latest Release**](https://github.com/Kohan-Mucan/FareverPal/releases) | [**View on GitHub**](https://github.com/Kohan-Mucan/FareverPal)
+[**Download Latest Release**](https://github.com/Kohan-Mucan/FareverMod/releases) | [**View on GitHub**](https://github.com/Kohan-Mucan/FareverMod)
 
 ---
 
@@ -16,11 +16,13 @@ layout: default
 - 💎 **Entity & Loot Overlay**  
   See nearest enemies and chests with real game icons and distances. View the full predicted drop table (by rarity) for the closest chest or enemy based on your current level.
 - ⚔️ **Live DPS Meter**  
-  Real-time DPS with a live sparkline graph, tracking damage via per-target HP-diff.
+  Real-time DPS with a live sparkline graph, tracking real per-hit combat events via the capture mode you pick in Settings.
 - 🗺️ **POI Minimap**  
   Top-down radar showing chests, secret orbs, gatherables, enemies, obelisks, and dungeon entrances with zoom and panning support. Right-click any collectible to mark it as done.
-- 📦 **Offline Loot Predictor**  
-  Browse the full predicted drop table for any loot table in the game at any player level — entirely offline, no connection needed.
+- 🔮 **Rift Predictor**  
+  Know where the next hourly rift opens and when — a live countdown card in the sidebar (red while the rift is live, green through the 15-minute warning window), chime reminders before it spawns, and the predicted rift pinned on the map. Runs on clock math alone, so it keeps counting even with the game closed.
+- 📦 **Gear, Items & Farm Browser**  
+  Every item with its drop sources, farm rows, plus loadout and enchant planning.
 - 🏃 **Speedrun Timer**  
   Floating stopwatch with auto-start on dungeon entry, auto-stop on boss kill, and per-boss personal best tracking.
 - 📡 **Server Diagnostics**  
@@ -42,16 +44,16 @@ layout: default
 ---
 
 ## 🛠️ Quick Start
-1. [**Download the latest release**](https://github.com/Kohan-Mucan/FareverPal/releases) and extract the folder.
+1. [**Download the latest release**](https://github.com/Kohan-Mucan/FareverMod/releases) and extract the folder.
 2. Launch **Farever**.
-3. Run `FareverPal.exe`.
+3. Run `FareverMod.exe`.
 4. Use the in-game menu to configure your overlays (Default toggle: `F1`).
 
 ---
 
 ## 💾 Data & Save Files
 
-All settings and progress are stored in a `moddata/` folder created automatically **next to `FareverPal.exe`** on first run. You can back it up, move it between machines, or delete it to reset everything.
+All settings and progress are stored in a `moddata/` folder created automatically **next to `FareverMod.exe`** on first run. You can back it up, move it between machines, or delete it to reset everything.
 
 | File | What it stores |
 |------|----------------|
@@ -62,24 +64,14 @@ All settings and progress are stored in a `moddata/` folder created automaticall
 
 ### ⚙️ Toggling Individual Ores & Flowers
 
-Each gatherable type can be shown or hidden individually by editing `moddata/settings.json` (while the app is closed) and setting the corresponding key to `true` or `false`:
+Each gatherable type can be shown or hidden individually right in the app — no config editing needed. Go to **Settings → Layers**, find the **Gatherables** row, and expand it: Flowers (Lavendula, Madrigold, Zealotus, Ancient Thyme) and Ore (Copper, Tin, Tungstene) each get a multi-select picker, so any combination can be on at once.
 
-```json
-"show_lavendula":   true,
-"show_madrigold":   true,
-"show_zealotus":    true,
-"show_ancientthyme": true,
-"show_copperore":   true,
-"show_tinore":      true,
-"show_tungstene":   true
-```
-
-Set any entry to `false` to hide that gatherable from both the entity overlay and the minimap.
+A type is drawn only while it is selected there **and** the Gatherables layer switch is on. Hidden types stay hidden on both the entity overlay and the minimap.
 
 ---
 
 ## 🛠️ How it Works
-Farever Pal is designed to be **read-only**. It reads the game's memory from a completely separate process.
+FareverMod is designed to be **read-only**. It reads the game's memory from a completely separate process.
 - **No Writing:** It never changes your game state or items.
 - **No Injection:** It does not hook into DirectX or the game's executable.
 - **Anti-Crash:** Because it's out-of-process, even if the tool closes, your game remains unaffected.
@@ -87,6 +79,6 @@ Farever Pal is designed to be **read-only**. It reads the game's memory from a c
 ---
 
 ## 📜 Credits
-Farever Pal is a fan-made community tool, forked from the original project by **[Popparoni](https://github.com/Popparoni/FareverPal)**. Full credit for the original codebase and concept goes to them.
+FareverMod is a fan-made community tool, forked from the original project by **[Popparoni](https://github.com/Popparoni/FareverPal)**. Full credit for the original codebase and concept goes to them.
 
 Farever is developed by its respective creators. For full third-party attributions and licenses, please see the [Credits Page](CREDITS.md).

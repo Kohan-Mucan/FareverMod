@@ -305,3 +305,42 @@ def test_collection_catalog_counts_drops_index_shop_ids_as_obtainable(tmp_path):
     assert by_id["Mount_Wolf_01"]["obtainable"] is True    # drops-index shop id
     assert by_id["Glider_Fancy_EA_Spark"]["obtainable"] is True  # pattern half
     assert by_id["Mount_Plain_99"]["obtainable"] is False   # neither half
+
+
+def test_the_sheets_own_dungeon_rows_are_what_the_compiler_ships(tmp_path):
+    """The sheet states rift identity, so the compiler ships its rows as they are.
+
+    `dungeons.json` files both rifts under their own ids with everything the app
+    reads - title, boss, level, the shared 'Rifts' entrance, its mob list and
+    `is_rift` - which is what let the codex fallback (`_carry_rift_dungeons`)
+    retire. Two halves: the sheet's rift row must survive the loc-sheet pass
+    unchanged (`dungeons` is the one family LOC_FIELDS does not narrow), and the
+    compiler must not start repairing those rows from the codex again.
+    """
+    from compiler import LOC_FIELDS, _compile_loc_datasets
+
+    assert "dungeons" not in LOC_FIELDS, (
+        "a LOC_FIELDS entry for dungeons would strip the rift fields the sheet "
+        "states (is_rift / boss_icon / mobs) out of the compiled payload")
+
+    rift = {
+        "id": "rift_maat", "name": "Rift Nightking Maat Demon",
+        "ingame_name": "maat", "kind": "rift", "is_rift": True,
+        "entrance_zone": "Rifts", "level": 25,
+        "boss_id": "DemonSuperElite", "boss_name": "Nightking Maat Demon",
+        "boss_icon": "icons/units/DemonSuperElite.png",
+        "mobs": ["Demon_Rift_Claws", "ImpDemon_Rift"],
+    }
+    data = tmp_path / "assets" / "data"
+    data.mkdir(parents=True)
+    (data / "dungeons.json").write_text(
+        json.dumps({"dungeons": [rift]}), encoding="utf-8")
+
+    # nothing added, nothing narrowed away
+    assert _compile_loc_datasets(data, data)["dungeons"] == [rift]
+
+    source = (ROOT / "compiler.py").read_text(encoding="utf-8")
+    assert "_carry_rift_dungeons" not in source, (
+        "the compiler is repairing the dumped dungeon rows from the codex "
+        "again - the sheet states the rifts itself, so a carry can only "
+        "disagree with what the capture wrote")

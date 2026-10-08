@@ -28,6 +28,14 @@ ARRIVE = 4.0          # world units = "you are here" (matches nav_needle)
 # row clears itself
 ARRIVE_CLEAR = 15.0
 ARRIVE_CLEAR_KINDS = ("dungeon", "soulstone", "rift", "obelisk")
+# A FIXED waypoint is a world coordinate in ONE space - the open world or one
+# instance. An overworld spot means nothing inside a dungeon/rift (and a chest
+# tracked inside one means nothing once you leave), so the target dies on the
+# transition instead of pointing at nothing. The Entity HUD applies the same rule
+# (`entity_gather._last_was_in_dungeon`) and OverlayManager clears everything on
+# a map-ID change - but the needle ticks on its own, so with that HUD closed
+# nothing was watching: tracking an NPC and entering a rift left it pointing at
+# an open-world spot (reported live 2026-10-08).
 
 # world-space needle decal dimensions (world units, ground plane)
 N_TIP = 3.0
@@ -103,6 +111,8 @@ class TrackController(QtCore.QObject):
         self._needle: NeedleOverlay | None = None
         self._lock_addr: int | None = None    # sticky unit instance (hysteresis)
         self._hard_lock = False               # True if set via manual HUD click
+        # The space the current target was set in (see `_space_changed`).
+        self._track_in_instance = False
         self._rect = None                     # game window rect cache
         self._rect_at = 0.0
         self._timer = QtCore.QTimer(self)
@@ -182,6 +192,7 @@ class TrackController(QtCore.QObject):
         if kind == "orb" and key not in geo_orbs.by_id():
             return
         self.s.track_kind, self.s.track_id = kind, key
+        self._track_in_instance = self._in_instance()
         self._lock_addr = addr
         self._hard_lock = addr is not None
         self.s.save()
@@ -193,6 +204,7 @@ class TrackController(QtCore.QObject):
         self.s.track_kind = self.s.track_id = ""
         self._lock_addr = None
         self._hard_lock = False
+        self._track_in_instance = False
         self.s.save()
         self._timer.stop()
         if self._needle is not None:
@@ -221,11 +233,42 @@ class TrackController(QtCore.QObject):
         self._timer.start(TICK_MS)
         self._tick()
 
+    @staticmethod
+    def _fixed_waypoint(kind: str, key: str) -> bool:
+        """A target that IS a world coordinate, rather than a live entity or a
+        gatherable re-resolved by type each tick (whose spot is wherever you are
+        standing now, so it crosses no boundary)."""
+        if kind in ("orb", "pos", "chest", "chest_orb", "recipe", "dungeon",
+                    "rift", "obelisk", "soulstone"):
+            return True
+        return kind == "gather" and "|" in key
+
+    def _in_instance(self) -> bool:
+        """The app's one instance gate (`core.game_state`), False with no model."""
+        m = self.model
+        if m is None:
+            return False
+        return bool(game_state.in_instance(m))
+
+    def _space_changed(self) -> bool:
+        """Has the player crossed an instance boundary since this was tracked?
+
+        Only a transition clears, never the space the waypoint was set in. A
+        target resumed from Settings never went through `track()` in this
+        session, so it is measured against the open world - which is where every
+        fixed waypoint a user pins by hand comes from (NPCs, orbs, dungeon
+        and rift entrances, codex map pins) - and a detached tracker has no model
+        to ask, so it keeps whatever it had.
+        """
+        return self._in_instance() != self._track_in_instance
+
     def _target(self):
         """(x, y, z, label) of the current target, or (None, label) shapes:
         returns None when the target is gone for good, ('searching', label)
         when a tracked unit just isn't in the loaded scene right now."""
         kind, key = self.s.track_kind, self.s.track_id
+        if self._fixed_waypoint(kind, key) and self._space_changed():
+            return None
         if kind == "orb":
             o = geo_orbs.by_id().get(key)
             if o is None:

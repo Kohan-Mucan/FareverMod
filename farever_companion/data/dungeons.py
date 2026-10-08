@@ -2,13 +2,21 @@ from __future__ import annotations
 from functools import lru_cache
 from .raw_data import DATA
 
+
 @lru_cache(maxsize=1)
 def load_dungeons() -> list[dict]:
-    """Returns the list of dungeons from raw_data, sorted by level then name, Rifts last."""
-    ds = DATA.get("dungeons", [])
+    """Returns the list of dungeons, sorted by level then name, Rifts last.
+
+    The compiled `raw_data['dungeons']` ships every row the app needs, both
+    RIFTS included under their own ids: the dungeon scan states each rift's
+    identity on its own sheet row - title, boss, level, the shared 'Rifts'
+    entrance, its mob list and `is_rift` - and the compiler ships those rows as
+    they stand, so there is nothing to recover here.
+    """
+    ds = list(DATA.get("dungeons", []))
     # Sort by: is_rift (False < True), then level, then name
     return sorted(ds, key=lambda d: (
-        d.get("entrance_zone") == "Rifts",
+        d.get("entrance_zone") == "Rifts" or bool(d.get("is_rift")),
         d.get("level", 99),
         d.get("name", "").lower()
     ))
@@ -19,7 +27,34 @@ def by_id() -> dict[str, dict]:
 
 @lru_cache(maxsize=1)
 def by_entrance_zone() -> dict[str, dict]:
-    return {d["entrance_zone"]: d for d in load_dungeons()}
+    """{entrance_zone: dungeon}, skipping the rows that declare none.
+
+    The payload carries zone-less rows — a POI that only marks where a dungeon
+    starts (`Z1_POI_Dungeon_ManfishGeyser`) — and indexing `d["entrance_zone"]`
+    on one of those raised a KeyError for every caller, which reads as "no
+    dungeon is here" for a zone that simply has no row. A row with no entrance
+    zone is not an entrance.
+    """
+    return {d["entrance_zone"]: d for d in load_dungeons()
+            if d.get("entrance_zone")}
+
+def is_listable(d: dict) -> bool:
+    """Does this row name anything the app can show as a dungeon?
+
+    The payload carries rows that are only a PLACE the extraction saw, with no
+    dungeon attached: `Z1_POI_Dungeon_ManfishGeyser` has no `name`, no
+    `boss_id`/`boss_name`, no `entrance_zone` and no `dungeon_loc` - only a
+    `level`. The Codex dungeon list renders the boss line as
+    `boss_name or icon or "?"`, so such a row showed up as a bare `?` with
+    `Lv 10`, unnameable and untrackable.
+
+    Nothing else needs this test: every other consumer already skips a row
+    without a name or a `boss_id` on its own (see `codex.bosses`,
+    `sources._dungeon_roll_sources`). It is stated here so the rule lives with
+    the data it describes instead of inside one widget.
+    """
+    return bool(d.get("boss_name") or d.get("boss_id") or d.get("name"))
+
 
 @lru_cache(maxsize=1)
 def dungeon_unit_ids() -> set[str]:
@@ -43,17 +78,6 @@ def unit_to_dungeon_map() -> dict[str, dict]:
             mapping[mid] = d
     return mapping
 
-# The two Rift bosses each spawn at a fixed spot — one in Z1 (Enripit Falls),
-# one in Z2 (Krisomal North) — but the compiled data carries no boss -> spot
-# mapping (both rift POIs are named 'POI Rift 01' and every rift mob resolves
-# to both). These come from the known in-game spawn points; flip if the game
-# changes them.
-_RIFT_ZONE_BY_ID = {
-    "rift_maat": "Z1",        # Rift Nightking Maat Demon
-    "rift_shaarlize": "Z2",   # Rift Nightqueen Shaarlize Te'ror
-}
-
-
 def zone_tag_from_zone_id(zone_id: str) -> str | None:
     """'Z1_Enripit_Falls' -> 'Z1' (Crimson -> Z3), or None."""
     if not zone_id:
@@ -70,13 +94,17 @@ def zone_tag(d: dict) -> str | None:
     """Zone filter tag for a dungeon ('Z1'/'Z2'/'Z3'), or None.
 
     Crimson entrances map to Z3 — the codex treats Crimson Island as Z3 even
-    though its metadata entrance zones are Z2_CrimsonIsland_*. Rifts resolve
-    by their fixed spawn point (one in Z1, one in Z2).
+    though its metadata entrance zones are Z2_CrimsonIsland_*. For every other
+    dungeon `entrance_zone` IS the zone it sits in.
+
+    A RIFT is the exception: both rifts share the one 'Rifts' entrance, which
+    says nothing about where their bosses stand (Z1 Enripit Falls / Z2 Krisomal
+    North — the two overworld rift gates, and nothing in the game data binds
+    either gate to a rift), so the row states its own `zone`. That value is
+    curated in `Dungeons_Scanner/dungeons_config.json` and carried onto the row
+    by the capture, so this reads the sheet instead of keeping a table here.
     """
-    ez = d.get("entrance_zone") or ""
-    if ez == "Rifts":
-        return _RIFT_ZONE_BY_ID.get(d.get("id"))
-    return zone_tag_from_zone_id(ez)
+    return zone_tag_from_zone_id(d.get("zone") or d.get("entrance_zone") or "")
 
 
 def get_dungeon_info(activity_id_or_name: str | None) -> dict | None:

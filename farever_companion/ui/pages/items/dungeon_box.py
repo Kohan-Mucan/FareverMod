@@ -2,7 +2,8 @@
 
 Split out of `dungeon_view.py`, which sits on the 840-line budget the UI
 test enforces. `show_box` is the pane a click on a cache opens; `weapon_chip`
-is the compact weapon tile a boss row carries. Both reach back into
+is the compact weapon tile a boss row carries, always painted at the highest
+rung the game hands the piece out at. The builders reach back into
 `dungeon_view` for the shared row builders, imported INSIDE the functions so
 `dungeon_view` can import this module at module level without a cycle.
 """
@@ -13,6 +14,7 @@ from PySide6 import QtCore, QtWidgets
 from ... import theme
 from ....data import icons
 from ....data import items as idata
+from .support import projection_rungs
 
 
 def show_box(page, cache_id: str) -> None:
@@ -118,33 +120,131 @@ def show_box(page, cache_id: str) -> None:
 # ----------------------------------------------------------------------
 
 
-def weapon_chip(page, iid: str) -> QtWidgets.QFrame:
-    """Compact weapon tile for the boss row: icon + rarity-colored name,
-    click opens the item detail (accepting the event keeps it from also
-    triggering the row's select)."""
+# The chip's edge is full-strength rung colour: it is a 2px frame, not a
+# tint over the panel, so anything below solid reads as a smudge against it.
+# (The old banded fill carried its colour at 90 over the card body; the edge
+# carries it at full strength around a plain body.)
+_CHIP_EDGE_ALPHA = 255
+#: The frame's thickness: the outer frame's layout margin, so the gradient
+#: behind the body reads as a border this wide.
+_CHIP_EDGE_PX = 2
+
+
+def _chip_block_style(rungs: tuple[str, ...], read: str) -> str:
+    """The colour style of the FRAME around a weapon chip's icon and name.
+
+    The rungs are painted as HARD-STOP segments of the frame — flat colour,
+    never a smooth gradient — left to right, one segment per rung the reading
+    spans (a single rung is a solid frame in its colour). The body inside
+    stays plain panel: the bands-across-the-card fill read as noise, while
+    the edge states the same ladder in the space a frame already occupies.
+
+    `rungs` is the reading the chip shows. An EMPTY tuple means the piece is
+    being read at the tier it actually drops at, so the frame is that single
+    tier's colour rather than nothing at all.
+
+    The object-name selector is required: the frame's own body is a QFrame
+    too, and a bare `QFrame` rule would paint the gradient behind the icon
+    and the name as well as around them.
+    """
+    cols = tuple(rungs) or (read,)
+    span = len(cols)
+    stops = []
+    for i, rung in enumerate(cols):
+        col = theme.with_alpha(theme.rarity_color(rung), _CHIP_EDGE_ALPHA)
+        lo = i / span
+        hi = (i + 1) / span
+        stops.append(f"stop:{lo:.4f} {col}, stop:{hi - 0.0005:.4f} {col}")
+    return ("QFrame#Card { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            + ", ".join(stops)
+            + "); border: none; border-radius: 6px; }"
+            + f"QFrame#WeaponChipBody {{ background: {theme.PANEL}; "
+              "border: none; border-radius: 4px; }")
+
+
+def paint_weapon_chip(chip: QtWidgets.QFrame, tier: str | None = None) -> None:
+    """Repaint an existing weapon chip's icon + name at `tier`.
+
+    ONE source of a chip's colours: `weapon_chip` builds through this, so the
+    two can never disagree.
+
+    `tier` is the rung the chip is read at — the owner passes the highest rung
+    the game hands the piece out at; None falls back to the item's own
+    authored tier (every weapon in the catalog is authored Rare). A boss
+    weapon read at Legendary states the rungs its dungeon rolls, so nothing
+    here touches the item, the list or the filters.
+
+    The chip carries its own item id (`weapon_iid`), so a repaint needs no
+    side registry: the row that owns the chip is the only thing that has to
+    know which item it is showing.
+    """
+    iid = str(chip.property("weapon_iid") or "")
+    if not iid:
+        return
     it = idata.item(iid) or {}
     name = it.get("name") or iid
-    ncol = theme.rarity_color(idata.item_display_rarity(iid))
+    read = tier or idata.item_display_rarity(iid)
+    col = theme.rarity_color(read)
+    marks = projection_rungs(iid, read)
+    # the FRAME carries the ladder (see _chip_block_style) — the icon stays
+    # a plain tile in the read colour, exactly like every other item tile in
+    # the app (the browse grid, the Collection cards). Split-colour bands at
+    # 32px read as noise next to the weapon art; the frame around the card
+    # is where the colours have room to read.
+    chip.setStyleSheet(_chip_block_style(marks, read))
+    icon = chip.findChild(QtWidgets.QLabel, "WeaponChipIcon")
+    if icon is not None:
+        # the fill is the item's tier as READ, like its name — and the tile
+        # wears NO rung frame here: the chip's own frame already states the
+        # ladder, so a second one at 32px would double-stutter it
+        icon.setPixmap(icons.item_tile(iid, name, 32, col, rungs=()))
+    nm = chip.findChild(QtWidgets.QLabel, "WeaponChipName")
+    if nm is not None:
+        nm.setStyleSheet(
+            f"color:{col};font-weight:600;font-size:11.5px;"
+            "background:transparent;")
+
+
+def weapon_chip(page, iid: str,
+                tier: str | None = None) -> QtWidgets.QFrame:
+    """Compact weapon tile for the boss row: icon + rarity-colored name,
+    click opens the item detail (accepting the event keeps it from also
+    triggering the row's select).
+
+    `tier` is the highest rung the game hands the piece out at (see
+    `paint_weapon_chip`). The chip still shows ONE weapon: the row repeats
+    nothing, it just reads each weapon at its own max.
+    """
+    it = idata.item(iid) or {}
+    name = it.get("name") or iid
     frame = QtWidgets.QFrame()
     frame.setObjectName("Card")
-    h = QtWidgets.QHBoxLayout(frame)
+    frame.setProperty("weapon_iid", iid)
+    outer = QtWidgets.QHBoxLayout(frame)
+    # the margin IS the frame: the gradient behind the body shows through
+    # here as a border `_CHIP_EDGE_PX` wide
+    outer.setContentsMargins(_CHIP_EDGE_PX, _CHIP_EDGE_PX,
+                             _CHIP_EDGE_PX, _CHIP_EDGE_PX)
+    outer.setSpacing(0)
+    body = QtWidgets.QFrame()
+    body.setObjectName("WeaponChipBody")
+    outer.addWidget(body)
+    h = QtWidgets.QHBoxLayout(body)
     h.setContentsMargins(6, 4, 6, 4)
     h.setSpacing(6)
     icon = QtWidgets.QLabel()
-    # the icon's fill is the item's own tier, like its name and like every
-    # other item tile in the app (the browse grid, the Collection cards)
-    icon.setPixmap(icons.item_tile(iid, name, 32, ncol))
+    icon.setObjectName("WeaponChipIcon")
     h.addWidget(icon)
     nm = QtWidgets.QLabel(name)
-    nm.setStyleSheet(
-        f"color:{ncol};font-weight:600;font-size:11.5px;"
-        "background:transparent;")
+    nm.setObjectName("WeaponChipName")
     nm.setWordWrap(True)
     h.addWidget(nm, 1)
     frame.setCursor(QtCore.Qt.PointingHandCursor)
+    paint_weapon_chip(frame, tier)
 
     def _open(ev, _p=page, _i=iid):
         _p._items_show_id(_i)
         ev.accept()
     frame.mouseReleaseEvent = _open
     return frame
+

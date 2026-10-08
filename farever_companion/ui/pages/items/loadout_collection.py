@@ -13,6 +13,7 @@ from ... import components as C
 from ....data import items as idata
 from ....craft import planner as pdata
 from ....runtime import reentry
+from .support import rarity_passes, weapon_tiers
 
 # Tile builds per event-loop tick while the collection view streams in.
 # One tick of 24 tiles is ~35 ms of widget construction (measured 2026-09-28,
@@ -47,23 +48,22 @@ _SLOT_DISPLAY = {
     "GearFinger": "RINGS", "GearTrinket": "TRINKETS",
     _WEAPON_SLOT: "WEAPONS",
 }
-# The tiers the collection can show, in ladder order. Whether a tier gets a
-# chip depends on what it can mean for the current SLOT filter, because the
-# two mean different things:
+# The tiers the collection can show, in ladder order. A tier gets a chip only
+# when it can mean something for the current SLOT filter — a filter that shows
+# nothing is worse than no filter — and what it means is the same on every
+# slot: which pieces the game can hand you at that tier.
 #
-#   gear slot / All — a real rarity filter. Only tiers the visible set
-#     actually contains are offered. The catalog has 160 Rare and 127 Epic
-#     gear pieces and NO Legendary at all, so a Legendary chip there could
-#     only ever open the empty state: a filter that shows nothing is worse
-#     than no filter.
-#   WEAPONS slot — a rarity PROJECTION. Every one of the 36 weapons is
-#     display-Rare, so a real Epic/Legendary filter would match none of
-#     them, yet weapons are exactly the gear that carries per-rarity stats
-#     in-game (`gear_rarity_tiers` expands them up the ladder, Rare +3 /
-#     Epic +4 / Legendary +5). So on that slot the tier is what to READ the
-#     weapons at, and the tile says so: "Epic +4" beside the Epic numbers.
+#   gear slot / All — the item's own rarity. The catalog has 160 Rare and 127
+#     Epic gear pieces and NO Legendary at all, so a Legendary chip there
+#     could only ever open the empty state.
+#   WEAPONS slot — the rung the game hands the piece out AT, because a weapon's
+#     row is single-rarity and the grant decides the tier: the Hero Weapon
+#     Cache rolls Epic..Legendary for its pool, and every dungeon rolls its
+#     boss weapons up too, so those chips are real there; a vendor-only piece
+#     is not listed under an Epic chip at all. The tile is then read AT the tier you
+#     picked — "Epic +4" beside the Epic numbers — because that is the piece
+#     you would be holding.
 _COLL_RARITIES = ("Rare", "Epic", "Legendary")
-_WEAPON_PROJECTION_RARITIES = _COLL_RARITIES
 
 
 def _coll_filter_tag(text: str) -> QtWidgets.QLabel:
@@ -187,18 +187,15 @@ class LoadoutCollectionMixin:
                 continue
             if self._coll_slot_filter and stype != self._coll_slot_filter:
                 continue
-            # The rarity chip is a MATCH on a gear slot and a PROJECTION on
-            # Weapons (see `_build_collection_item_tile`): every weapon in
-            # the catalog is display-Rare, so matching on the tier filtered
-            # the whole slot into the empty state the projection was
-            # invented to avoid. The tile re-reads each piece at the tier, so
-            # the section must keep every id.
-            if stype == _WEAPON_SLOT:
-                ids = [iid for iid, _rar in pairs]
-            else:
-                ids = [iid for iid, rar in pairs
-                       if not self._coll_rarity_filter
-                       or rar == self._coll_rarity_filter]
+            # The rarity chip matches what each piece can be HANDED OUT at
+            # (`support.rarity_passes`): a gear slot's own rarity, and on
+            # Weapons the rungs the game grants — a weapon's row is
+            # single-rarity, so matching the row alone would empty the slot,
+            # while matching the handout rungs keeps exactly the weapons that
+            # can be that tier and drops the ones that cannot.
+            ids = [iid for iid, _rar in pairs
+                   if not self._coll_rarity_filter
+                   or rarity_passes(iid, (self._coll_rarity_filter,))]
             if ids:
                 sections.append((stype, ids))
 
@@ -425,13 +422,21 @@ class LoadoutCollectionMixin:
     def _coll_rarities_for(self) -> tuple[str, ...]:
         """The rarity chips the current SLOT filter can honour.
 
-        Weapons: every tier, because a tier is a projection there (see
+        Weapons: the rungs the slot's weapons can be handed out at (see
         `_COLL_RARITIES`). Anything else: only the tiers the visible items
         actually carry, so a tier that cannot match anything — Legendary,
         which no item in the catalog is — is not offered at all.
         """
         if self._coll_slot_filter == _WEAPON_SLOT:
-            return _WEAPON_PROJECTION_RARITIES
+            # Derived from the game's own rows: a tier the weapons here can
+            # only reach through a box that hands them out is offered, a tier
+            # nothing can reach is not (see idata.obtainable_tiers)
+            reachable: set[str] = set()
+            for it in idata.items():
+                if idata.category(it.get("type")) == "Weapons":
+                    reachable.update(
+                        idata.obtainable_tiers(it.get("id") or ""))
+            return tuple(r for r in _COLL_RARITIES if r in reachable)
         present = set()
         for it in idata.items():
             if not idata.is_gear(it):
@@ -462,15 +467,16 @@ class LoadoutCollectionMixin:
         clay.setSpacing(10)
 
         rar = idata.item_display_rarity(item_id)
-        # On the WEAPONS slot the rarity chips are a PROJECTION: the tier is
-        # what to read the piece at, not a filter it has to match. Weapons
-        # carry per-rarity stats in-game, so Epic is +4 and Legendary +5, and
-        # the tile names the tier it is showing so the numbers cannot be
-        # mistaken for the piece's own Rare ones. Everywhere else the chip is
-        # a real filter and the shown item's rarity already IS the filter.
+        # A weapons-slot tile is read at the lit tier when the game can hand
+        # THIS weapon out at it (`support.weapon_tiers`), and named so the
+        # numbers cannot be mistaken for the piece's own Rare ones ("Epic +4"
+        # beside the Epic numbers). A weapon that cannot be handed out at the
+        # lit tier keeps its own rarity: the chip never listed it, and a tile
+        # must not print a rung its own weapon cannot reach.
         projected = ""
         if (self._coll_slot_filter == _WEAPON_SLOT
-                and self._coll_rarity_filter):
+                and self._coll_rarity_filter
+                and self._coll_rarity_filter in weapon_tiers(item_id)):
             projected = self._coll_rarity_filter
             rar = projected
         col = theme.rarity_color(rar)
