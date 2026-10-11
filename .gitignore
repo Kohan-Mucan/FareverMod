@@ -1,0 +1,12 @@
+# Machine-local editors and agent metadata - never site content.
+.freebuff/
+.idea/
+/AGENTS.md
+
+# Dead placeholder from Search Console setup (empty; verification uses
+# google09b92cda11b037e1.html instead).
+tag.txt
+
+# OS junk.
+Thumbs.db
+.DS_Store

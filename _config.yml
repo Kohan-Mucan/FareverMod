@@ -1,5 +1,5 @@
-title: Farever Pal
-description: A lightweight, out-of-process companion tool for Farever.
+title: FareverMod
+description: A lightweight, out-of-process companion tool for Farever. Live DPS meter, entity HUD, minimap radar, dungeon Secret Orbs, run timer, PB history, gear browser and bestiary codex.
 theme: jekyll-theme-minimal
-show_downloads: true
+show_downloads: false
 google_analytics: # Add your ID here if you ever want tracking

@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="google-site-verification" content="hnpiGizqjw8CwSMaP8k3Xjg_Bv0OADtMhwSLf9rvBiE">
+<title>FareverMod — live companion tool for Farever</title>
+<meta name="description" content="FareverMod: live DPS meter with group rankings, entity HUD, minimap radar, dungeon Secret Orbs, run timer, PB history, gear and enchant planning, codex, craft and server ping for Farever. Real screenshots of every HUD and page.">
+<link rel="canonical" href="https://kohan-mucan.github.io/FareverMod/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FareverMod">
+<meta property="og:title" content="FareverMod — live companion tool for Farever">
+<meta property="og:description" content="Live DPS meter, entity and loot HUD, minimap radar, dungeon Secret Orbs, run timer, PB history, gear and enchant planning, codex, craft and server ping for Farever.">
+<meta name="keywords" content="FareverMod, Farever DPS meter, Farever codex, Farever chest tracker, secret orb tracker, rift schedule, rift predictor, weapon lookup, armor lookup, farm browser, speedrun timer, server ping, minimap">
+<meta property="og:url" content="https://kohan-mucan.github.io/FareverMod/">
+<meta property="og:image" content="https://kohan-mucan.github.io/FareverMod/shots/page-overlays.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="FareverMod — live companion tool for Farever">
+<meta name="twitter:description" content="Live DPS meter, entity and loot HUD, minimap radar, dungeon Secret Orbs, run timer, PB history, gear and enchant planning, codex, craft and server ping for Farever.">
+<meta name="twitter:image" content="https://kohan-mucan.github.io/FareverMod/shots/page-overlays.jpg">
+<meta name="theme-color" content="#f0662a">
+<meta name="color-scheme" content="dark light">
+<meta property="og:locale" content="en_US">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23f0662a' opacity='.15'/%3E%3Ctext x='50' y='58' font-size='60' text-anchor='middle' dominant-baseline='middle'%3E⚔%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23f0662a'/%3E%3Ctext x='50' y='58' font-size='60' fill='white' text-anchor='middle' dominant-baseline='middle'%3E⚔%3C/text%3E%3C/svg%3E">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"FareverMod","operatingSystem":"Windows 10/11 (64-bit)","applicationCategory":"GameApplication","description":"Live DPS meter with group rankings, entity HUD, minimap radar, dungeon Secret Orbs, run timer, PB history, gear and enchant planning, codex, craft and server ping for the game Farever.","downloadUrl":"https://github.com/Kohan-Mucan/FareverMod/releases","screenshot":"https://kohan-mucan.github.io/FareverMod/shots/page-overlays.jpg","author":{"@type":"Person","name":"Kohan-Mucan"},"offers":{"@type":"Offer","price":"0"}}
+</script>
+
+<style>
+:root, [data-theme="dark"] {
+  --bg: #0d1117; --bg2: #161b22; --card: #1c2330; --line: #2d3748;
+  --ink: #e8edf3; --muted: #9aa7b8; --accent: #f0662a; --accent-ink: #fff;
+  --accent-deep: #c2410c; /* text-bearing accent bg: white on this passes AA at 5.2:1 */
+  --code-bg: #161b22; --nav-active: #242e40;
+}
+[data-theme="light"] {
+  --bg: #fbfaf7; --bg2: #fff8ef; --card: #ffffff; --line: #e8e2d5;
+  --ink: #23272f; --muted: #6b7280; --accent: #c2410c; --accent-ink: #fff;
+  --code-bg: #f4efe4; --nav-active: #f0e8d8;
+}
+[data-theme="dark"] #pane-overview { background: radial-gradient(60% 45% at 50% 0%, rgba(240,102,42,.12), transparent 70%);
+  border-radius: 1rem; }
+[data-theme="dark"] h1 em { background: linear-gradient(135deg, #f0662a, #ffb020);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.stats { display: flex; flex-wrap: wrap; gap: 2rem 2.5rem; margin: 2rem 0 0; color: var(--muted); font-size: .95rem; }
+.stats > a { display: flex; flex-direction: column; gap: .25rem; color: inherit; text-decoration: none;
+  border-radius: .6rem; padding: .35rem .7rem; margin: -.35rem -.7rem; transition: background .15s ease; }
+.stats > a:hover { background: var(--nav-active); }
+.stats > a:hover b { color: var(--accent); }
+.stats > a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stats b { display: block; font-size: 1.8rem; color: var(--ink); font-weight: 800; letter-spacing: -.02em; }
+.stats span { font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+[data-theme="light"] .card { border-radius: .8rem; box-shadow: 0 10px 28px -18px rgba(194,65,12,.35); }
+[data-theme="light"] .mode { background: var(--card); box-shadow: 0 8px 22px -16px rgba(194,65,12,.3); }
+* { box-sizing: border-box; }
+html, body { height: 100%; scroll-behavior: smooth; }
+body { margin: 0; background: radial-gradient(120% 120% at 10% 0%, rgba(240,102,42,.07), transparent 60%), var(--bg);
+  color: var(--ink); font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.7; font-size: 16px; overflow: hidden; }
+.app { display: grid; grid-template-columns: 264px 1fr; height: 100vh; }
+/* ---- sidebar ---- */
+aside { background: var(--bg2); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0; }
+.brand { flex: 1; font-weight: 800; font-size: 1.3rem; padding: 1.1rem 1.25rem .9rem; }
+.brand span { color: var(--accent); }
+.brand small { display: block; font-weight: 400; font-size: .78rem; color: var(--muted); }
+nav.side { flex: 1; overflow-y: auto; padding: .25rem .6rem 1rem; }
+nav.side .group { font-size: .7rem; font-weight: 800; letter-spacing: .14em;
+  color: var(--accent); padding: 1.1rem .65rem .35rem; margin-top: .4rem;
+  border-top: 1px solid var(--line); }
+nav.side .group:first-child { border-top: 0; margin-top: 0; padding-top: .4rem; }
+nav.side a { display: flex; align-items: center; gap: .55rem; color: var(--muted); text-decoration: none;
+  padding: .5rem .7rem; border-radius: .5rem; font-size: .92rem; border-left: 3px solid transparent;
+  outline: none; transition: color .15s ease, background .15s ease; }
+nav.side a:focus-visible { background: var(--nav-active); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
+nav.side a::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--line); flex: none; }
+nav.side a:hover { color: var(--ink); background: var(--nav-active); }
+nav.side a:hover::before { background: var(--muted); }
+nav.side a.on { color: var(--ink); background: var(--nav-active); font-weight: 700;
+  border-left-color: var(--accent); }
+nav.side a.on::before { background: var(--accent); }
+.brand-row { display: flex; align-items: center; gap: .5rem; }
+.icon-btn { padding: .35rem .7rem; }
+.side-actions { display: flex; gap: .5rem; padding: .2rem 1.25rem 1rem; }
+.side-actions a { flex: 1; text-align: center; text-decoration: none; font-weight: 700; font-size: .85rem;
+  border-radius: .55rem; padding: .5rem 0; }
+.side-actions .dl { background: var(--accent-deep); color: var(--accent-ink); }
+.side-actions .gh { border: 1px solid var(--line); color: var(--ink); background: var(--card); }
+.toggle { cursor: pointer; border: 1px solid var(--line); background: var(--card);
+  color: var(--ink); border-radius: 999px; padding: .35rem .9rem; font-size: .88rem; }
+/* ---- content ---- */
+main { min-width: 0; overflow-y: auto; padding: 3rem 3rem 4rem; }
+main::-webkit-scrollbar { width: 10px; }
+main::-webkit-scrollbar-track { background: transparent; }
+main::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid var(--bg); }
+.pane { display: none; max-width: 960px; animation: fade .18s ease-in; }
+.pane.on { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+h1 { font-size: clamp(2rem, 4vw, 2.8rem); line-height: 1.15; margin: 0 0 .8rem; letter-spacing: -.02em; }
+h1 em { font-style: normal; color: var(--accent); }
+h2 { font-size: 1.35rem; margin: 1.9rem 0 .4rem; }
+p.sub { color: var(--muted); margin-top: 0; }
+/* ---- screenshots (real captures from the app) ---- */
+figure.shot { margin: 2rem 0 0; position: relative; }
+figure.shot img { width: 100%; height: auto; display: block; background: #05070a;
+  border: 1px solid var(--line); border-radius: .9rem;
+  box-shadow: 0 30px 60px -30px rgba(240,102,42,.35);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+figure.shot img:hover { transform: translateY(-2px); border-color: rgba(240,102,42,.55);
+  box-shadow: 0 40px 70px -30px rgba(240,102,42,.45); }
+figure.shot figcaption { margin-top: .6rem; font-size: .85rem; color: var(--muted); }
+figure.shot figcaption b { color: var(--ink); }
+.shotnav { position: absolute; top: 50%; transform: translateY(-50%);
+  width: 4.2rem; height: 5.2rem; font-size: 2.5rem; line-height: 1; color: var(--ink);
+  background: rgba(10,14,20,.55); border: 1px solid var(--line); border-radius: .5rem;
+  cursor: pointer; opacity: 0; transition: opacity .15s ease, background .15s ease; }
+.shotnav.prev { left: .5rem; }
+.shotnav.next { right: .5rem; }
+figure.shot:hover .shotnav, figure.shot:focus-within .shotnav { opacity: 1; }
+.shotnav:hover { background: rgba(240,102,42,.85); }
+.shotnav:focus-visible { opacity: 1; outline: 2px solid var(--accent); }
+@media (max-width: 820px) { .shotnav { opacity: 1; } }
+.picker { display: grid; grid-template-columns: 252px minmax(0, 1fr); gap: 1.4rem;
+  align-items: start; margin-top: 1.4rem; }
+.picklist { display: flex; flex-direction: column; gap: .3rem; max-height: 68vh; overflow-y: auto;
+  padding-right: .3rem; }
+.picklist::-webkit-scrollbar { width: 8px; }
+.picklist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+.pickgroup { margin: .7rem 0 .1rem; font-size: .68rem; font-weight: 800; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--accent); }
+.pickgroup:first-child { margin-top: 0; }
+.pick { display: flex; flex-direction: column; gap: .05rem; text-decoration: none; color: var(--ink);
+  background: var(--card); border: 1px solid var(--line); border-left: 3px solid transparent;
+  border-radius: .5rem; padding: .45rem .7rem; font-size: .88rem; outline: none;
+  transition: background .15s ease, border-color .15s ease; }
+.pick small { color: var(--muted); font-size: .76rem; }
+.pick:hover { background: var(--nav-active); }
+.pick:focus-visible { box-shadow: 0 0 0 3px rgba(240,102,42,.35); }
+.pick[aria-selected="true"] { background: var(--nav-active); font-weight: 700; border-left-color: var(--accent); }
+.pick[aria-selected="true"] small { color: var(--ink); opacity: .75; }
+.shot.viewer { margin: 0; }
+.shot.viewer img { width: auto; max-width: 100%; max-height: 68vh; margin: 0 auto; }
+.shot.viewer img:hover { transform: none; }
+.shot.viewer figcaption { text-align: center; }
+.shot.viewer .shotdesc { margin: 0 0 .6rem; padding: .7rem .8rem; background: var(--bg2); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: .5rem; color: var(--muted); font-size: .85rem; line-height: 1.6; display: none; }
+/* small HUD shots: text box fills the right side beside the image */
+.shot.viewer.side { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1rem; align-items: stretch; }
+.shot.viewer.side .shotview { order: 1; }
+.shot.viewer.side .shotdesc { margin: 0; order: 2; align-self: start; }
+.shot.viewer[hidden] { display: none; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; margin-top: 1.5rem; }
+.card { background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--card);
+  border: 1px solid var(--line); border-radius: .9rem; overflow: hidden; box-shadow: 0 20px 40px -20px rgba(0,0,0,.4);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.card:hover { transform: translateY(-3px); box-shadow: 0 30px 60px -30px rgba(240,102,42,.25); border-color: rgba(240,102,42,.5); }
+.card .pad { padding: 1.1rem 1.2rem 1.2rem; }
+.card h2 { margin: 0 0 .25rem; font-size: 1rem; }
+.card p { margin: 0; color: var(--muted); font-size: .9rem; }
+.note { margin-top: 1.5rem; padding: .8rem 1rem; background: var(--bg2); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: .5rem; color: var(--muted); font-size: .85rem; }
+.note b { color: var(--ink); }
+.release-current { margin-top: 1rem; }
+.release-head { display: flex; align-items: baseline; gap: .65rem; flex-wrap: wrap; }
+.release-head h2 { margin: 0; font-size: 1.15rem; }
+.release-head time { color: var(--muted); font-size: .8rem; }
+.release-body { margin-top: .65rem; }
+.release-body h3 { margin: .8rem 0 .2rem; font-size: .95rem; }
+.release-body h3:first-child { margin-top: 0; }
+.release-body p { margin: .35rem 0; }
+.release-body ul { margin: .3rem 0; padding-left: 1.3rem; }
+.release-body li { margin: .15rem 0; }
+.release-body code { background: var(--code-bg); border: 1px solid var(--line); border-radius: .3rem; padding: 0 .3rem; font-size: .86em; }
+.release-older { margin-top: 1.6rem; }
+.release-older > h2 { margin-bottom: .5rem; }
+.rel { margin: .55rem 0; padding: .55rem .9rem; background: var(--bg2); border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: .6rem; }
+.rel[open] { border-left-color: var(--accent); }
+.rel summary { cursor: pointer; display: flex; align-items: baseline; gap: .55rem; flex-wrap: wrap; list-style: none; }
+.rel summary::-webkit-details-marker { display: none; }
+.rel summary .tag { color: var(--ink); font-weight: 700; }
+.rel summary time { color: var(--muted); font-size: .76rem; }
+.rel .chip { font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; background: var(--accent-deep); color: var(--accent-ink); border-radius: .35rem; padding: .05rem .45rem; }
+.rel .release-body { margin-top: .55rem; }
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem; }
+.mode { background: var(--bg2); border: 1px solid var(--line); border-radius: .75rem; padding: 1rem 1.1rem; }
+.mode b { display: block; margin-bottom: .25rem; }
+.mode p { margin: 0; color: var(--muted); font-size: .9rem; }
+.mode .tag { display: inline-block; font-size: .72rem; font-weight: 700; background: var(--accent-deep);
+  color: var(--accent-ink); border-radius: .4rem; padding: .1rem .5rem; margin-bottom: .45rem; }
+.guide ul, .guide ol { margin: .4rem 0; padding-left: 1.4rem; color: var(--muted); }
+.guide li { margin: .3rem 0; }
+.guide b, .guide strong { color: var(--ink); }
+.guide code { background: var(--code-bg); border: 1px solid var(--line); border-radius: .3rem;
+  padding: .05rem .35rem; font-size: .86em; }
+.guide pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: .5rem;
+  padding: .9rem 1.1rem; overflow: auto; font-size: .83rem; }
+.guide table { border-collapse: collapse; width: 100%; margin: .6rem 0; font-size: .9rem; }
+.guide td, .guide th { border: 1px solid var(--line); padding: .4rem .75rem; text-align: left; }
+.guide th { background: var(--bg2); }
+.guide a, .cred a { color: var(--accent); }
+.cred li { margin: .4rem 0; }
+/* ---- mobile: sidebar becomes top bar, page scrolls ---- */
+.menu-btn { display: none; }
+@media (max-width: 820px) {
+  body { overflow: auto; }
+  .app { display: block; height: auto; }
+  aside { position: sticky; top: 0; z-index: 5; border-right: 0; border-bottom: 1px solid var(--line); }
+  nav.side { display: none; max-height: 60vh; }
+  aside.open nav.side { display: block; }
+  .menu-btn { display: inline-block; }
+  .brand-row { display: flex; align-items: center; justify-content: space-between; }
+  main { overflow: visible; padding: 1.5rem 1.5rem 3rem; }
+  .grid, .modes, .picker { grid-template-columns: 1fr; gap: 1rem; }
+  .shot.viewer { order: -1; }
+  .shot.viewer.side { grid-template-columns: 1fr; }
+  .picklist { max-height: 320px; }
+  .shot.viewer img { max-height: none; }
+  h1 { font-size: clamp(1.75rem, 6vw, 2rem); }
+  .stats { gap: 1.25rem 1.5rem; }
+  .stats b { font-size: 1.5rem; }
+  .side-actions { flex-direction: column; }
+}
+/* ---- accessibility: skip link, focus rings, reduced motion ---- */
+.skip { position: absolute; left: -999px; top: 0; z-index: 100; background: var(--accent-deep);
+  color: var(--accent-ink); padding: .6rem 1.1rem; border-radius: 0 0 .6rem 0;
+  font-weight: 700; text-decoration: none; }
+.skip:focus { left: 0; }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="app">
+  <aside id="sidebar">
+    <div class="brand-row">
+      <div class="brand">Farever<span>Mod</span><small>companion for Farever</small></div>
+      <button class="toggle icon-btn" id="themeBtn" title="Toggle light/dark" aria-label="Switch to light theme">☾</button>
+      <button class="toggle icon-btn menu-btn" id="menuBtn" aria-label="Open navigation" aria-expanded="false" aria-controls="sideNav">☰</button>
+    </div>
+    <div class="side-actions">
+      <a class="dl" href="https://github.com/Kohan-Mucan/FareverMod/releases">Download</a>
+      <a class="gh" href="https://github.com/Kohan-Mucan/FareverMod">GitHub</a>
+    </div>
+    <nav class="side" id="sideNav" aria-label="Sections">
+      <div class="group">EXPLORE</div>
+      <a href="#overview" data-pane="overview">Overview</a>
+      <a href="#releases" data-pane="releases">Releases</a>
+      <a href="#hudoverlays" data-pane="hudoverlays">HUD Overlays</a>
+      <a href="#appui" data-pane="appui">App Ui</a>
+      <div class="group">APP</div>
+      <a href="#features" data-pane="features">Features</a>
+      <a href="#modes" data-pane="modes">DPS capture modes</a>
+      <a href="#data" data-pane="data">Data &amp; save files</a>
+      <a href="#how" data-pane="how">How it works</a>
+      <div class="group">ABOUT</div>
+      <a href="#credits" data-pane="credits">Credits</a>
+    </nav>
+  </aside>
+
+  <main id="main" tabindex="-1">
+    <section class="pane" id="pane-overview">
+      <h1>Farever Companion</h1>
+      <p class="sub">Look up gear, items, mobs, and crafting recipes right inside the app, using the game’s own data. Six HUD overlays and nine sidebar pages in one companion window.</p>
+      <div class="stats"><a class="stat" href="https://github.com/Kohan-Mucan/FareverMod/releases/tag/v0.3.6" title="Latest release on GitHub"><b id="verLatest">v0.3.6</b><span>latest release</span></a><a class="stat" href="https://github.com/Kohan-Mucan/FareverMod/releases/tag/Pre-release" title="Pre-release on GitHub"><b id="verPre">v0.3.7</b><span>pre-release</span></a><a class="stat" data-pane="appui" href="#appui" title="The app's sidebar pages"><b>9</b><span>sidebar pages</span></a><a class="stat" data-pane="hudoverlays" href="#hudoverlays" title="The six HUD windows"><b>6</b><span>HUD overlays</span></a><a class="stat" data-pane="modes" href="#modes" title="Proxy, injector, memory reader"><b>3</b><span>DPS capture modes</span></a><a class="stat" data-pane="how" href="#how" title="How the tool reads the game"><b>0</b><span>writes to the game</span></a></div>
+
+      <figure class="shot" id="ov-shot">
+        <img src="shots/page-overlays.jpg" alt="Overlays page with the HUD tiles, behavior toggles and the global appearance controls" width="1280" height="800" fetchpriority="high">
+        <button class="shotnav prev" id="ov-prev" title="Previous page" aria-label="Previous screenshot page">‹</button>
+        <button class="shotnav next" id="ov-next" title="Next screenshot page">›</button>
+        <figcaption id="ov-cap">🎛️ <b>Overlays</b> HUD grid, lock, opacity</figcaption>
+      </figure>
+    </section>
+
+    <section class="pane guide" id="pane-releases">
+      <h1>Releases</h1>
+      <div id="releaseList"><div class="note"><a href="https://github.com/Kohan-Mucan/FareverMod/releases">Browse releases on GitHub</a></div></div>
+    </section>
+
+    <section class="pane" id="pane-appui">
+      <h1>App Ui</h1>
+      <p class="sub">The app’s sidebar pages, captured from a real session — pick one to see them full of real data.</p>
+      <div class="picker">
+        <div class="picklist" role="tablist" aria-label="App Ui screenshots">
+          <a class="pick" id="pick-page-overlays" role="tab" aria-selected="true" tabindex="0" href="shots/page-overlays.jpg" data-alt="Overlays page with the HUD tiles, behavior toggles and the global appearance controls" data-w="1280" data-h="800" data-desc="<p>One page for the whole HUD set: every overlay’s visibility, Borderless and Transparent, Lock (Click-through), Auto-Lock in Combat, Auto-Hide in Menus, Mouse Centering (Game Screen), Overlay Opacity and the Highlight Accent Color.</p>
+  <p>The top section holds every HUD window in one grid, each with its Borderless and Transparent toggles, above the shared Behavior &amp; Automation and Global Appearance panels.</p>"><span>🎛️ Overlays</span><small>HUD grid, lock, opacity</small></a>
+          <a class="pick" id="pick-page-combat" role="tab" aria-selected="false" tabindex="-1" href="shots/page-combat.jpg" data-alt="DPS Analysis page: the Nepsilon · Heroic boss fight with the Encounter DPS Timeline and a per-skill breakdown for Player 1 (You) — ranked DPS (Sword Base Attack, Axe Base Attack, Meteor), DPS 23,347.8/s, rank #1, with Player 2 (Mage), Player 3 (Rogue) and Player 4 (Priest) beside it" data-w="1600" data-h="1000" data-desc="<p>The meter’s history page: the Encounter DPS Timeline, per-player rails and a SEGMENT control (Boss / Trash / Adds / Overall), then the per-skill table with SKILL, TOTAL, %, HITS, CRIT% and Avg Hit.</p>
+  <p>PB History is one click away, and every number comes from the game’s own per-hit damage events, never from HP diff or polling.</p>"><span>📊 DPS Analysis</span><small>Timeline, per-skill table</small></a>
+          <a class="pick" id="pick-page-gear" role="tab" aria-selected="false" tabindex="-1" href="shots/page-gear.jpg" data-alt="Gear page on the Dungeons tab: faction chips and a picked boss row on the left, that boss's drops and the family's shared set on the right" data-w="1280" data-h="800" data-desc="<p>The Gear page on the Dungeons tab shows faction chips and a picked boss row on the left, then that boss’s own drops beside the family’s shared set on the right.</p>
+  <p>Picking one dungeon opens its drops alongside the faction’s shared gear, so the two side-by-side reads where each piece actually comes from.</p>"><span>🛡️ Gear · Dungeons</span><small>Boss drops, shared set</small></a>
+          <a class="pick" id="pick-page-codex" role="tab" aria-selected="false" tabindex="-1" href="shots/page-codex.jpg" data-alt="Codex page showing unit cards for one zone" data-w="1280" data-h="800" data-desc="<p>Every unit as a card, grouped by zone, on the Codex page. The Dungeons and Collection tabs live beside it, with search and filter legends above the list.</p>
+  <p>Each card is that unit’s own card, drawn from the game’s own data — the same data the Collection tab uses when you flip over to it.</p>"><span>📖 Codex · Zones</span><small>Unit cards, per zone</small></a>
+          <a class="pick" id="pick-page-codex-collection" role="tab" aria-selected="false" tabindex="-1" href="shots/page-codex-collection.jpg" data-alt="Codex page on the Collection tab, Pets sub-view, with the Missing (75) button clicked — spawn pins for 185 uncollected mobs plotted across the world map, pickers drawing from 75 hidden entries" data-w="1280" data-h="800" data-desc="<p>The Codex’s Collection tab splits into <b>Pets</b>, <b>Mounts</b>, <b>Gliders</b>, <b>Chests</b> and <b>Orbs</b> sub-views.</p>
+  <p>Each sub-view is a card grid of every collectible in that group, with counted <b>Visible (N)</b> and <b>Hidden (N)</b> filters side by side. The Missing (N) button plots every unowned entry’s spawn as pins on the world map in one click — so a quick sweep through the level is one pane switch away. Hidden entries stay hidden until you ask for them.</p>"><span>🐱 Codex · Collection</span><small>Pets, mounts, gliders, chests</small></a>
+          <a class="pick" id="pick-page-craft" role="tab" aria-selected="false" tabindex="-1" href="shots/page-craft.jpg" data-alt="Craft page with recipes and the craft list" data-w="1280" data-h="800" data-desc="<p>The Craft page with recipes, crafting jobs and a craft list that totals up everything a build still needs, with the full supply chain beside each recipe.</p>
+  <p>Each recipe shows its own chain, so you can see where a build’s materials come from and what still needs to be gathered or crafted.</p>"><span>⚒️ Craft</span><small>Recipes, jobs, craft list</small></a>
+          <a class="pick" id="pick-page-settings-rift" role="tab" aria-selected="false" tabindex="-1" href="shots/page-settings-rift.jpg" data-alt="Settings page on the Rift tab showing the upcoming rift schedule" data-w="1280" data-h="800" data-desc="<p>Settings · Rift opens on the Upcoming Rift Schedule: the live radar and timetable with the next rift’s countdown, the 15m / 10m / 5m / 1m / Live lead-time chips, and a Time / Zone table for what follows, plus Audio Alerts chime reminders.</p>
+  <p>It all runs on pure clock math from the game’s own hourly algorithm, so the schedule keeps counting with the game closed.</p>"><span>🔮 Settings · Rift</span><small>Rift schedule, alerts</small></a>
+          <a class="pick" id="pick-page-pb" role="tab" aria-selected="false" tabindex="-1" href="shots/page-pb.jpg" data-alt="PB History page listing recorded runs with Full and Boss split times" data-w="1280" data-h="800" data-desc="<p>The PB History page: every recorded run with When, Character, Dungeon, Boss, Mode, Full and Boss split, plus RUNS / CHARACTERS / BEST FULL / BEST BOSS readouts above the table.</p>
+  <p>The table filters by Character and Dungeon, and runs and bests are shared across characters — the same runs the Run Timer lands when a fight finishes.</p>"><span>🏆 PB History</span><small>Runs, Best Full, Best Boss</small></a>
+          <a class="pick" id="pick-page-party" role="tab" aria-selected="false" tabindex="-1" href="shots/page-party.jpg" data-alt="Player Inspect page with a player's gear grid, buffs and total stats" data-w="1280" data-h="800" data-desc="<p>Player Inspect: a per-slot gear grid — weapons, armor, jewelry, tools, Pet, Glider, Mount, Job Tool and Pickaxe — with the member’s Consumables, Buffs and a Total Stats block beside the Selected Piece view.</p>
+  <p>It reads the same player data the overlays read, so the gear grid and total stats reflect what is actually equipped at the moment.</p>"><span>🧍 Player Inspect</span><small>Gear grid, buffs, total stats</small></a>
+          <a class="pick" id="pick-page-server" role="tab" aria-selected="false" tabindex="-1" href="shots/page-server.jpg" data-alt="Server Ping page with the region ping test" data-w="1280" data-h="800" data-desc="<p>Server Ping: a Region Ping Test against the game servers and Global Login, the Live Game IP Scanner tab, and a Network Trace tab, with Diagnostic Tools beside them.</p>
+  <p>The region ping test hits the actual game servers, not a third-party service, and the IP scanner runs on the live game IP it detects.</p>"><span>📡 Server Ping</span><small>Region ping, IP scanner</small></a>
+        </div>
+        <figure class="shot viewer" id="appui-view" role="tabpanel" aria-live="polite" hidden>
+          <div class="shotdesc"></div>
+          <img class="shotview" src="shots/page-overlays.jpg" alt="Overlays page with the HUD tiles, behavior toggles and the global appearance controls" width="1280" height="800" aria-labelledby="pick-page-overlays">
+        </figure>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-hudoverlays">
+      <h1>HUD Overlays</h1>
+      <p class="sub">The six HUD windows that draw over the game — pick one to see it live.</p>
+      <div class="picker">
+        <div class="picklist" role="tablist" aria-label="HUD overlay screenshots">
+          <a class="pick" id="pick-hud-dps" role="tab" aria-selected="true" tabindex="0" href="shots/hud-dps.png" data-alt="Top DPS Meter HUD: group damage, healing and taken chips above a ranked player list" data-w="320" data-h="420" data-desc="<p>A ranked DPS meter built from the game’s own per-hit damage events — not HP polling. It shows group damage, healing and damage taken above a ranked list, with a SOURCE badge that names the active capture mode (LIVE, CAL or IDLE).</p>
+  <p>The meter stays empty until real combat events flow in, so it is always live damage and healing, never a diff or a derived number.</p>"><span>⚔️ Top DPS Meter</span><small>Ranked meters, group DPS</small></a>
+          <a class="pick" id="pick-hud-entity" role="tab" aria-selected="false" tabindex="-1" href="shots/hud-entity.png" data-alt="Entity HUD listing nearby enemies, chests, companions and orbs with distances" data-w="375" data-h="756" data-desc="<p>A live entity panel of nearby enemies, chests, companions and orbs, using the game’s own icons and real-time distance.</p>
+  <p>Entities are grouped by layer so the HUD reflects what is actually on screen, with proximity reading out as you move.</p>"><span>💎 Entity HUD</span><small>Enemies, chests, companions, orbs</small></a>
+          <a class="pick" id="pick-hud-minimap" role="tab" aria-selected="false" tabindex="-1" href="shots/hud-minimap.jpg" data-alt="Minimap Radar HUD with chest, orb, dungeon gate and party markers around the player" data-w="400" data-h="440" data-desc="<p>A real-time top-down POI radar of chests, foes and gatherables, with a Circle / Square shape and Map Zoom. Right-click a marker to toggle it done / undone for that character, and the Compass Needle adds &quot;Accent ring on minimap + 3D pointer overlay&quot;.</p>"><span>🗺️ Minimap Radar</span><small>Chests, orbs, dungeons, party</small></a>
+          <a class="pick" id="pick-hud-dungeon" role="tab" aria-selected="false" tabindex="-1" href="shots/hud-dungeon.png" data-alt="Dungeon HUD with boss, clones, loot, party and secret orb rows" data-w="354" data-h="617" data-desc="<p>An instanced dungeon and rift radar: bosses, clones, loot and party, with Secret Orbs detected live.</p>
+  <p>The instance and activity orbs stay out of the overworld’s static RedOrb_World index on purpose, so the dungeon HUD only reflects the instanced space you are actually in.</p>"><span>🌀 Dungeon HUD</span><small>Bosses, clones, loot, party</small></a>
+          <a class="pick" id="pick-hud-speedrun" role="tab" aria-selected="false" tabindex="-1" href="shots/hud-speedrun.png" data-alt="Run Timer HUD showing the run clock and the boss split with pace rows" data-w="330" data-h="200" data-desc="<p>Automatic run timing inside dungeons and rifts: RUN starts on zone-in, BOSS starts on the fight’s first damage, and both stop on the kill.</p>
+  <p>The finished run’s log lives on the PB History page, where runs and bests are shared across characters.</p>"><span>🏃 Run Timer</span><small>RUN + boss split</small></a>
+          <a class="pick" id="pick-hud-dummy" role="tab" aria-selected="false" tabindex="-1" href="shots/hud-dummy.png" data-alt="Test Dummy HUD with DPS, healing, damage taken and per-skill rows" data-w="300" data-h="400" data-desc="<p>The dummy test board: DPS, healing and damage taken, with per-skill rows, VS LAST TEST and SPLIT BY TARGET against the target’s health bar.</p>
+  <p>It auto-shows while a training dummy is in range, and its chrome is owned by Settings · HUD’s.</p>"><span>🎯 Test Dummy HUD</span><small>DPS, healing, taken, per skill</small></a>
+        </div>
+        <figure class="shot viewer side" id="hud-view" role="tabpanel" aria-live="polite" hidden>
+          <div class="shotdesc"></div>
+          <img class="shotview" src="shots/hud-dps.png" alt="Top DPS Meter HUD: group damage, healing and taken chips above a ranked player list" width="320" height="420" aria-labelledby="pick-hud-dps">
+        </figure>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-features">
+      <h1>Features</h1>
+      <div class="grid">
+        <div class="card"><div class="pad"><h2>⚔️ Top DPS Meter</h2><p>Ranked damage meters and group DPS, built from the game's own per-hit damage events. Meters the instance in dungeons and rifts, everywhere with Instances Only off. A SOURCE badge names the active DPS source (LIVE / CAL / IDLE); the meter stays empty — never HP-derived — until real events flow.</p></div></div>
+        <div class="card"><div class="pad"><h2>💎 Entity HUD</h2><p>Nearby enemies, chests, companions, orbs and tactical sensors with the game's own icons and live distance, grouped by layer.</p></div></div>
+        <div class="card"><div class="pad"><h2>🗺️ Minimap Radar</h2><p>A real-time top-down POI radar of chests, foes and gatherables, with a Circle / Square shape and Map Zoom. Right-click a marker to toggle it done / undone for that character, and the Compass Needle adds "Accent ring on minimap + 3D pointer overlay".</p></div></div>
+        <div class="card"><div class="pad"><h2>🌀 Dungeon HUD</h2><p>An instanced dungeon and rift radar: bosses, clones, loot and party, with Secret Orbs detected live — the instance and activity orbs stay out of the overworld's static RedOrb_World index on purpose.</p></div></div>
+        <div class="card"><div class="pad"><h2>🏃 Run Timer</h2><p>Automatic in dungeons and rifts: RUN starts on zone-in, BOSS on the fight's first damage, and both stop on the kill. The kill log lives on the PB History page.</p></div></div>
+        <div class="card"><div class="pad"><h2>🎯 Test Dummy HUD</h2><p>The dummy test: the Stop / Start Test button, DPS, healing and damage taken, per-skill numbers, VS LAST TEST, SPLIT BY TARGET and the target's health bar. Auto-shows while a training dummy is in range; its chrome lives in Settings · HUD's.</p></div></div>
+        <div class="card"><div class="pad"><h2>📊 DPS Analysis</h2><p>The meter's history: the Encounter DPS Timeline, per-player rails (RANK / PLAYERS / CLASS / DPS / SHARE / CRIT %), a SEGMENT control (Boss / Trash / Adds / Overall) and the per-skill table — SKILL, TOTAL, %, HITS, CRIT% and Avg Hit — with PB History one click away.</p></div></div>
+        <div class="card"><div class="pad"><h2>🏆 PB History</h2><p>Every recorded run with the app's own columns: When, Character, Dungeon, Boss, Mode, Full and Boss split. RUNS / CHARACTERS / BEST FULL / BEST BOSS readouts above; the table filters by Character and Dungeon.</p></div></div>
+        <div class="card"><div class="pad"><h2>🧍 Player Inspect</h2><p>A per-slot gear grid — weapons, armor, jewelry, tools, Pet, Glider, Mount, Job Tool and Pickaxe — with the member's Consumables, Buffs and a Total Stats block beside the Selected Piece view.</p></div></div>
+        <div class="card"><div class="pad"><h2>🛡️ Gear &amp; enchant planning</h2><p>Gear, Items, Enchants and Farm tabs: every item with its sources and farm rows, then planning for GEM, the Corrupted Gift gear conversions, Elixirs, Food, enchant scrolls, Magic Formulas, Infusions, gear Upgrades and the Soulwell.</p></div></div>
+        <div class="card"><div class="pad"><h2>📖 Codex · Zones</h2><p>Every unit as a card, grouped by zone — with the Dungeons and Collection tabs beside it, search and filter legends above the list. Each card is drawn from the game's own data.</p></div></div>
+        <div class="card"><div class="pad"><h2>🐱 Codex · Collection</h2><p>The Collection tab splits into Pets / Mounts / Gliders / Chests / Orbs sub-views, each a card grid of every collectible with counted Visible (N) / Hidden (N) / Nearby filters. The Missing (N) button plots every unowned entry's spawn as pins on the world map in one click, so a quick sweep through the level is one pane switch away; hidden entries stay hidden until you ask for them.</p></div></div>
+        <div class="card"><div class="pad"><h2>⚒️ Craft</h2><p>Recipes with their supply chain, crafting jobs, and a craft list that totals up everything a build still needs.</p></div></div>
+        <div class="card"><div class="pad"><h2>🔮 Rift schedule</h2><p>Settings · Rift opens on the <b>Upcoming Rift Schedule</b> — the LIVE RADAR & TIMETABLE: the next rift with its countdown, the Lead Time chips (15m / 10m / 5m / 1m / Live) and a Time / Zone table for what follows, plus Audio Alerts chime reminders. The sidebar carries the Rift Schedule Card, and it all runs on pure clock math — the game's own hourly algorithm, so it keeps counting with the game closed.</p></div></div>
+        <div class="card"><div class="pad"><h2>📡 Server diagnostics</h2><p>A Region Ping Test against the game servers and Global Login, the Live Game IP Scanner tab, and a Network Trace tab, with Diagnostic Tools beside them.</p></div></div>
+        <div class="card"><div class="pad"><h2>🎛️ Overlays control</h2><p>One page for the whole HUD set: per-window visibility, Borderless and Transparent, Lock (Click-through), Auto-Lock in Combat, Auto-Hide in Menus and Mouse Centering (Game Screen) — plus Overlay Opacity and the Highlight Accent Color.</p></div></div>
+        <div class="card"><div class="pad"><h2>🧩 Modules you can switch off</h2><p>Settings · Pages turns any page off so it never builds, Settings · Layers owns which entity and gatherable types are drawn, and Settings · HUD's owns the per-HUD chrome and notifications.</p></div></div>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-modes">
+      <h1>DPS capture <em>modes</em></h1>
+      <p class="sub">The meter's combat feed depends on the mode you pick in Settings · DPS (the Combat DPS Engine panel). Both DLL modes only stream combat events out; drops and game state are never touched.</p>
+      <div class="modes">
+        <div class="mode"><span class="tag">DEFAULT</span><b>Option 2: Hot Injector</b><p>Hot-injects a hook DLL into the running game. Full combat event coverage without touching the game folder.</p></div>
+        <div class="mode"><b>Option 1: Drop-In Proxy</b><p>A proxy DLL placed in the game folder for the game to load itself on startup. No runtime injection.</p></div>
+        <div class="mode"><b>Option 3: Memory Reader</b><p>Pure passive memory reads with no DLL at all — the strictly DLL-free session.</p></div>
+      </div>
+      <div class="note">Farever is online and server-authoritative: no capture mode can change drops or any game state. Option 1 is file-backed, so the app refuses to start an injector or reader session beside it — remove its DLL first, which the page says outright. The overlays and minimap are read-only memory reads, and there is no write primitive anywhere in the tree.</div>
+    </section>
+
+    <section class="pane guide" id="pane-data">
+      <h1>Data &amp; save files</h1>
+      <p class="sub">All settings and progress are stored in a <code>moddata/</code> folder created automatically <b>next to <code>FareverMod.exe</code></b> on first run. Back it up, move it between machines, or delete it to reset everything.</p>
+      <table>
+        <thead><tr><th scope="col">File</th><th scope="col">What it stores</th></tr></thead>
+        <tbody>
+        <tr><td><code>moddata/settings.json</code></td><td>Global app settings — overlay positions, toggles, hotkeys, disabled pages</td></tr>
+        <tr><td><code>moddata/progress_&lt;CharacterName&gt;.json</code></td><td>Per-character progress — collectibles marked done, hidden entities, per-boss bests</td></tr>
+        <tr><td><code>moddata/collection.json</code></td><td>Collection data behind the codex's collection view</td></tr>
+        <tr><td><code>moddata/dps/</code></td><td>Combat history — one file per fight, read back by DPS Analysis and PB History</td></tr>
+        <tr><td><code>moddata/speedrun_history.json</code></td><td>Runs and bests shared across characters, behind PB History</td></tr>
+        </tbody>
+      </table>
+      <p><b>Each character gets their own progress file.</b> When the tool detects which character you're playing, it loads that character's progress automatically. Every write is atomic (temp file, then replace) and a file that won't parse is preserved as a <code>.bak</code> beside the original, so there is always one previous copy to fall back on.</p>
+      <p>Running from source writes to <code>dist/moddata</code> instead; a released <code>FareverMod.exe</code> keeps everything in <code>moddata/</code> beside the exe. If a data file comes back unreadable, the next launch offers a <b>Data Recovery &amp; Backups</b> window — the app's own title — that can restore it.</p>
+    </section>
+
+    <section class="pane guide" id="pane-how">
+      <h1>How it works</h1>
+      <ul>
+        <li><b>Read-only core:</b> the overlays and minimap read the game's memory from a separate process with a read-only handle. They never change game state or items.</li>
+        <li><b>Reflection, not fixed addresses:</b> the game runs on HashLink, which keeps class and field names in the runtime, so objects are identified by name rather than by brittle addresses.</li>
+        <li><b>Loot sources:</b> gear, chests, vendors, crates and craft material rows come from scanned acquisition data and the game's loot tables — the what and where, not a live roll. Drops are server-authoritative. Every game item, mob, armor piece and other in-game entry the app shows come from the game's own files — nothing in the app requires looking anything up on another site.</li>
+        <li><b>DPS capture modes:</b> the combat feed needs game events — proxy DLL, hot injector (default), or DLL-free memory reader. Totals come from the game's own per-hit damage objects, never from HP polling.</li>
+        <li><b>One anchor for your character:</b> a single long-lived object is resolved and followed each frame, so tracking survives zone changes and menus without rescanning the heap.</li>
+      </ul>
+      <div class="note"><b>Honest limits:</b> the overlays and minimap are read-only memory reads. The two DLL capture modes run game-loaded code to export combat events, so they carry the normal caveats of any game hook — pick Option 3 for a strictly DLL-free session. Newer pieces (like speedrun difficulty auto-detect) are still being refined.</div>
+    </section>
+
+    <section class="pane cred" id="pane-credits">
+      <h1>Credits</h1>
+      <p>FareverMod is an <strong>unofficial, community</strong> fan tool. It is not affiliated with
+      or endorsed by the developers of Farever. Please buy and support the game on
+      Steam. This tool is taken down, or has any contested content stripped, on
+      request from the developers.</p>
+      <h2>The game</h2>
+      <ul>
+        <li><strong>Farever</strong> and all of its names, data, icons, and assets belong to its
+        developers. All game-derived data, imagery, and the minimap's world-to-pixel
+        coordinate calibration are produced in-house from the game's own files — no
+        third-party sites, map layers, or community maps are used.</li>
+        <li>Built on the <a href="https://heaps.io">Heaps</a> engine and the
+        <a href="https://hashlink.haxe.org">HashLink</a> VM.</li>
+      </ul>
+      <h2>Origins</h2>
+      <ul>
+        <li>FareverMod is based on
+        <a href="https://github.com/Popparoni/FareverPal">Popparoni/FareverPal</a>. Full
+        credit for the original codebase and concept goes to
+        <a href="https://github.com/Popparoni">Popparoni</a>.</li>
+      </ul>
+      <h2>Bundled fonts &amp; icons</h2>
+      <ul>
+        <li><strong>Roboto Condensed</strong> — SIL Open Font License 1.1</li>
+        <li><strong>Lucide</strong> icons — ISC License</li>
+      </ul>
+    </section>
+  </main>
+</div>
+<script>
+// Pane router: one visible section, hash-synced, no page scroll.
+const links = [...document.querySelectorAll('nav.side a[data-pane]')];
+document.querySelectorAll('a[data-pane]:not(nav.side a)').forEach(a =>
+  a.addEventListener('click', () => show(a.dataset.pane)));
+const panes = [...document.querySelectorAll('.pane')];
+const main = document.getElementById('main');
+function show(name, push) {
+  if (!document.getElementById('pane-' + name)) name = 'overview';
+  panes.forEach(p => p.classList.toggle('on', p.id === 'pane-' + name));
+  links.forEach(a => {
+    const on = a.dataset.pane === name;
+    a.classList.toggle('on', on);
+    if (on) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  if (push !== false && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  main.scrollTop = 0;
+  document.getElementById('sidebar').classList.remove('open');
+}
+// Nav clicks route instantly; the hash change would do it a tick later anyway.
+links.forEach(a => a.addEventListener('click', () => show(a.dataset.pane)));
+window.addEventListener('hashchange', () => show(location.hash.slice(1) || 'overview', false));
+show(location.hash.slice(1) || 'overview', false);
+// Theme toggle, persisted.
+const t = document.getElementById('themeBtn');
+function paintThemeBtn() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  t.textContent = dark ? '☾' : '☀';
+  t.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+}
+const saved = localStorage.getItem('fm-theme');
+if (saved) document.documentElement.dataset.theme = saved;
+paintThemeBtn();
+t.onclick = () => {
+  const el = document.documentElement;
+  el.dataset.theme = el.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('fm-theme', el.dataset.theme);
+  paintThemeBtn();
+};
+document.getElementById('menuBtn').onclick = e => {
+  const open = document.getElementById('sidebar').classList.toggle('open');
+  e.currentTarget.setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+// Skip link: focus main without touching the hash (unknown hashes fall back to Overview).
+document.querySelector('.skip').addEventListener('click', e => {
+  e.preventDefault();
+  main.focus();
+});
+// Screenshot pickers: each pane's list drives that pane's own viewer.
+const allPicks = [];
+document.querySelectorAll('.picker').forEach(picker => {
+  const picks = [...picker.querySelectorAll('.picklist .pick')];
+  const shotFig = picker.querySelector('.shot.viewer');
+  const shotView = picker.querySelector('.shotview');
+  const shotDesc = picker.querySelector('.shotdesc');
+  picks.forEach(p => p.setAttribute('aria-controls', shotFig.id));
+  function selectShot(el, focus) {
+    picks.forEach(p => {
+      const on = p === el;
+      p.setAttribute('aria-selected', on ? 'true' : 'false');
+      p.tabIndex = on ? 0 : -1;
+    });
+    shotView.src = el.getAttribute('href');
+    shotView.alt = el.dataset.alt;
+    shotView.width = el.dataset.w;
+    shotView.height = el.dataset.h;
+    shotView.setAttribute('aria-labelledby', el.id);
+    if (el.dataset.desc) {
+      shotDesc.innerHTML = el.dataset.desc;
+      shotDesc.style.display = 'block';
+    } else {
+      shotDesc.style.display = 'none';
+    }
+    shotFig.hidden = false;
+    if (focus) el.focus();
+  }
+  picks.forEach((el, i) => {
+    el.addEventListener('click', e => { e.preventDefault(); selectShot(el); });
+    el.addEventListener('keydown', e => {
+      const step = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1
+                 : (e.key === 'ArrowUp' || e.key === 'ArrowLeft') ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      selectShot(picks[(i + step + picks.length) % picks.length], true);
+    });
+  });
+  selectShot(picks[0], false);
+  allPicks.push(...picks);
+});
+// Overview carousel: prev/next cycles the app-page shots (data reused from the
+// picker entries, so the two never drift apart).
+(function () {
+  const fig = document.getElementById('ov-shot');
+  if (!fig) return;
+  const img = fig.querySelector('img');
+  const cap = document.getElementById('ov-cap');
+  // Carousel order follows the app's own sidebar (nav_registry.NAV), not the
+  // Screenshots picker's listing: Overlays → Settings → Codex → Codex · Collection →
+  // DPS Analysis → Player Inspect → Gear → Craft → Server Ping.
+  const OV_ORDER = ['pick-page-overlays','pick-page-settings-rift','pick-page-codex',
+                    'pick-page-codex-collection','pick-page-combat','pick-page-party',
+                    'pick-page-gear','pick-page-craft','pick-page-server'];
+  const byId = Object.fromEntries(allPicks.filter(p => p.id && p.id.startsWith('pick-page-'))
+                                .map(p => [p.id, p]));
+  const pagePicks = OV_ORDER.map(id => byId[id]).filter(Boolean);
+  let i = 0;
+  function render() {
+    const p = pagePicks[i];
+    img.src = p.getAttribute('href');
+    img.alt = p.dataset.alt;
+    img.width = p.dataset.w;
+    img.height = p.dataset.h;
+    img.setAttribute('aria-labelledby', p.id);
+    // caption derives from the pick's own visible text — no data-* duplication
+    const label = p.querySelector('span').textContent.trim();
+    const sp = label.indexOf(' ');
+    const icon = sp < 0 ? '' : label.slice(0, sp);
+    const title = sp < 0 ? label : label.slice(sp + 1);
+    cap.innerHTML = (icon ? icon + ' ' : '') + '<b>' + title + '</b> ' + p.querySelector('small').textContent;
+  }
+  function step(d) { i = (i + d + pagePicks.length) % pagePicks.length; render(); }
+  document.getElementById('ov-prev').onclick = () => step(-1);
+  document.getElementById('ov-next').onclick = () => step(1);
+})();
+// Release tiles and the combined Releases pane share one fetch per window.
+(function () {
+  const KEY = 'fm-rel6';
+  const isVer = t => /^v?\d+\.\d+/i.test(t || '');
+  const put = (id, value, url) => {
+    const el = document.getElementById(id);
+    if (value) el.textContent = value;
+    if (url) el.closest('a').href = url;
+  };
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = s => s.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https:\/\/[^)\s]+\))/g).map(part => {
+    let m;
+    if ((m = /^\*\*(.+)\*\*$/.exec(part))) return '<b>' + esc(m[1]) + '</b>';
+    if ((m = /^`(.+)`$/.exec(part))) return '<code>' + esc(m[1]) + '</code>';
+    if ((m = /^\[([^\]]+)\]\((https:\/\/[^)\s]+)\)$/.exec(part))) {
+      try { const u = new URL(m[2]); if (u.protocol === 'https:') return '<a href="' + esc(u.href) + '" rel="noopener">' + esc(m[1]) + '</a>'; } catch (e) {}
+    }
+    return esc(part);
+  }).join('');
+  const md = src => {
+    let html = '', inList = false;
+    for (const raw of String(src || '').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (/^[-*] /.test(line)) { if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + inline(line.slice(2)) + '</li>'; continue; }
+      if (inList) { html += '</ul>'; inList = false; }
+      if (!line) continue;
+      if (/^#{1,4} /.test(line)) { html += '<h3>' + inline(line.replace(/^#+ /, '')) + '</h3>'; continue; }
+      html += '<p>' + inline(line) + '</p>';
+    }
+    return html + (inList ? '</ul>' : '');
+  };
+  const date = s => s ? new Date(s).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  function render(list) {
+    const box = document.getElementById('releaseList');
+    if (!box || !list || !list.length) return;
+    const latest = list.find(r => !r.prerelease) || list[0];
+    box.replaceChildren();
+    const current = document.createElement('details');
+    current.className = 'rel release-current';
+    current.name = 'releases';
+    current.open = true;
+    const head = document.createElement('summary'); head.className = 'release-head';
+    const title = document.createElement('h2'); title.textContent = latest.tag_name;
+    const time = document.createElement('time'); time.textContent = date(latest.published_at);
+    head.append(title, time); current.append(head);
+    const body = document.createElement('div'); body.className = 'release-body'; body.innerHTML = md(latest.body);
+    current.append(body);
+    box.append(current);
+    const older = list.filter(r => r !== latest);
+    if (!older.length) return;
+    const section = document.createElement('section'); section.className = 'release-older';
+    const heading = document.createElement('h2'); heading.textContent = 'Earlier releases'; section.append(heading);
+    older.forEach(r => {
+      const d = document.createElement('details'); d.className = 'rel'; d.name = 'releases';
+      const summary = document.createElement('summary');
+      const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = r.tag_name;
+      const when = document.createElement('time'); when.textContent = date(r.published_at);
+      summary.append(tag);
+      if (r.prerelease) { const chip = document.createElement('span'); chip.className = 'chip'; chip.textContent = 'pre-release'; summary.append(chip); }
+      summary.append(when); d.append(summary);
+      const notes = document.createElement('div'); notes.className = 'release-body'; notes.innerHTML = md(r.body);
+      d.append(notes);
+      section.append(d);
+    });
+    box.append(section);
+  }
+  const apply = data => {
+    put('verLatest', data.latest, data.latestUrl); put('verPre', data.pre, data.preUrl);
+    render(data.releases);
+  };
+  try { const cached = JSON.parse(sessionStorage.getItem(KEY)); if (cached) { apply(cached); return; } } catch (e) {}
+  fetch('https://api.github.com/repos/Kohan-Mucan/FareverMod/releases?per_page=10')
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(list => {
+      const stable = list.find(r => !r.prerelease), pre = list.find(r => r.prerelease);
+      const data = {
+        latest: (list.find(r => !r.prerelease && isVer(r.tag_name)) || {}).tag_name,
+        latestUrl: stable && stable.html_url,
+        pre: (list.find(r => r.prerelease && isVer(r.tag_name)) || {}).tag_name,
+        preUrl: pre && pre.html_url,
+        releases: list.slice(0, 10)
+      };
+      apply(data);
+      try { sessionStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {}
+    })
+    .catch(() => {}); // release links and notes remain available on GitHub
+})();
+</script>
+</body>
+</html>
